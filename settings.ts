@@ -42,7 +42,7 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h3", { text: "Vault summary note" });
+		new Setting(containerEl).setName("Vault summary note").setHeading();
 		new Setting(containerEl)
 			.setName("Note path")
 			.setDesc(
@@ -58,11 +58,12 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 					})
 			);
 
-		containerEl.createEl("h3", { text: "Default units" });
-		containerEl.createEl("p", {
-			text: "The scale your dollar figures and share counts are typically entered in. Overridable per calculation; price and EPS are always actual per-share dollars.",
-			cls: "setting-item-description",
-		});
+		new Setting(containerEl)
+			.setName("Default units")
+			.setDesc(
+				"The scale your dollar figures and share counts are typically entered in. Overridable per calculation; price and EPS are always actual per-share dollars."
+			)
+			.setHeading();
 
 		this.scaleSetting(
 			"Money scale",
@@ -71,11 +72,12 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		);
 		this.scaleSetting("Share count scale", "Applies to diluted shares outstanding.", "defaultSharesScale");
 
-		containerEl.createEl("h3", { text: "Default assumptions" });
-		containerEl.createEl("p", {
-			text: "Pre-filled into the valuation calculator. Per-stock numbers (beta, EPS, shares, debt, price, ...) are always entered fresh.",
-			cls: "setting-item-description",
-		});
+		new Setting(containerEl)
+			.setName("Default assumptions")
+			.setDesc(
+				"Pre-filled into the valuation calculator. Per-stock numbers (beta, EPS, shares, debt, price, ...) are always entered fresh."
+			)
+			.setHeading();
 
 		this.numberSetting(
 			"Risk-free rate (RFR, %)",

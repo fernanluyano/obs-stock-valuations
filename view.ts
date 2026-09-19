@@ -4,6 +4,7 @@ import {
 	BarElement,
 	CategoryScale,
 	Chart,
+	ChartData,
 	LinearScale,
 	Legend,
 	LineController,
@@ -228,7 +229,7 @@ export class StockValuationsView extends ItemView {
 	private deleteValuation(ticker: string): void {
 		new ConfirmModal(this.app, `Delete the saved valuation for ${ticker}?`, () => {
 			delete this.plugin.valuations[ticker];
-			this.plugin.saveValuations();
+			void this.plugin.saveValuations();
 			this.render();
 		}).open();
 	}
@@ -260,7 +261,7 @@ export class StockValuationsView extends ItemView {
 			updatedAt: Date.now(),
 		};
 		this.plugin.valuations[ticker] = record;
-		this.plugin.saveValuations();
+		void this.plugin.saveValuations();
 		new Notice(`Saved ${ticker}.`);
 		this.screen = "table";
 		this.render();
@@ -516,7 +517,7 @@ export class StockValuationsView extends ItemView {
 				// category x-axis, which works fine at runtime but not in the types.
 				data: {
 					labels: tickers,
-					datasets: [...datasets, averageDataset, priceDataset] as any,
+					datasets: [...datasets, averageDataset, priceDataset] as unknown as ChartData<"scatter">["datasets"],
 				},
 				options: {
 					responsive: true,
@@ -650,11 +651,11 @@ export class StockValuationsView extends ItemView {
 
 		const hero = root.createDiv({ cls: "sv-hero" });
 		const heroMain = hero.createDiv({ cls: "sv-hero-main" });
-		this.heroTickerEl = heroMain.createEl("span", { cls: "sv-hero-ticker", text: "New valuation" });
-		this.heroPriceEl = heroMain.createEl("span", { cls: "sv-hero-price", text: "" });
+		this.heroTickerEl = heroMain.createSpan({ cls: "sv-hero-ticker", text: "New valuation" });
+		this.heroPriceEl = heroMain.createSpan({ cls: "sv-hero-price", text: "" });
 
 		const unitsRow = root.createDiv({ cls: "sv-units-row" });
-		unitsRow.createEl("span", { cls: "sv-units-label", text: "Units" });
+		unitsRow.createSpan({ cls: "sv-units-label", text: "Units" });
 		this.scaleDropdown(unitsRow, "Money", this.moneyScale, this.moneyHintEls, (v) => {
 			this.moneyScale = v;
 		});
@@ -696,9 +697,13 @@ export class StockValuationsView extends ItemView {
 			text: "Fetch",
 			cls: "sv-link-btn",
 		});
-		fetchBtn.addEventListener("click", () => this.fetchPrice(priceInput, fetchBtn, true));
+		fetchBtn.addEventListener("click", () => {
+			void this.fetchPrice(priceInput, fetchBtn, true);
+		});
 		tickerInput.addEventListener("input", updateYahooLink);
-		tickerInput.addEventListener("blur", () => this.fetchPrice(priceInput, fetchBtn, false));
+		tickerInput.addEventListener("blur", () => {
+			void this.fetchPrice(priceInput, fetchBtn, false);
+		});
 
 		// --- WACC section ---
 		const wacc = this.section(formCol, "WACC");
@@ -760,7 +765,7 @@ export class StockValuationsView extends ItemView {
 		labelGroup.createEl("label", { text: label });
 		const helpText = HELP_TEXT[key];
 		if (helpText) {
-			const helpBtn = labelGroup.createEl("span", { cls: "sv-help-btn", text: "?" });
+			const helpBtn = labelGroup.createSpan({ cls: "sv-help-btn", text: "?" });
 			helpBtn.setAttr("role", "button");
 			helpBtn.setAttr("tabindex", "0");
 			setTooltip(helpBtn, helpText, { placement: "top" });
@@ -775,7 +780,7 @@ export class StockValuationsView extends ItemView {
 		}
 
 		if (unitKind) {
-			const hint = labelRow.createEl("span", { cls: "sv-unit-hint" });
+			const hint = labelRow.createSpan({ cls: "sv-unit-hint" });
 			if (unitKind === "perShare") {
 				hint.setText("$/share");
 			} else if (unitKind === "percent") {

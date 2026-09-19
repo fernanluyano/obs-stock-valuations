@@ -144,8 +144,7 @@
 .sv-form-col {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
-	column-gap: var(--size-4-8);
-	row-gap: var(--size-4-6);
+	gap: var(--size-4-6) var(--size-4-8);
 }
 
 /* Sections styled as ledger entries: an accent rule, not a boxed card */
@@ -253,10 +252,10 @@
 	font-weight: 500;
 }
 
-.sv-num {
+td.sv-num {
 	font-family: var(--sv-mono);
 	font-variant-numeric: tabular-nums;
-	text-align: right !important;
+	text-align: right;
 }
 
 .sv-mos {
@@ -522,9 +521,9 @@
 	margin: var(--size-4-2) 0;
 }
 
-.sv-docs-fit-heading {
+p.sv-docs-fit-heading {
 	font-weight: var(--font-semibold);
-	margin: 0 0 var(--size-4-1) 0 !important;
+	margin: 0 0 var(--size-4-1) 0;
 }
 
 .sv-docs-fit ul {

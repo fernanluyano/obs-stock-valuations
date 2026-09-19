@@ -5,6 +5,16 @@ import { requestUrl } from "obsidian";
 // the CORS restrictions a normal fetch() would hit against this endpoint.
 const YAHOO_HOSTS = ["query1.finance.yahoo.com", "query2.finance.yahoo.com"];
 
+interface YahooChartResponse {
+	chart?: {
+		result?: Array<{
+			meta?: {
+				regularMarketPrice?: number;
+			};
+		}>;
+	};
+}
+
 export async function fetchQuotePrice(ticker: string): Promise<number | null> {
 	const symbol = ticker.trim().toUpperCase();
 	if (!symbol) return null;
@@ -16,7 +26,8 @@ export async function fetchQuotePrice(ticker: string): Promise<number | null> {
 				throw: false,
 			});
 			if (res.status !== 200) continue;
-			const price = res.json?.chart?.result?.[0]?.meta?.regularMarketPrice;
+			const data = res.json as YahooChartResponse;
+			const price = data.chart?.result?.[0]?.meta?.regularMarketPrice;
 			if (typeof price === "number") return price;
 		} catch {
 			continue;

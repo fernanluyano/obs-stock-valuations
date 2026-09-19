@@ -26,14 +26,14 @@ export default class StockValuationsPlugin extends Plugin {
 		);
 
 		this.addRibbonIcon("landmark", "Stock valuations", () => {
-			this.activateView();
+			void this.activateView();
 		});
 
 		this.addCommand({
 			id: "open-valuation-calculator",
 			name: "Open calculator",
 			callback: () => {
-				this.activateView();
+				void this.activateView();
 			},
 		});
 
@@ -49,21 +49,17 @@ export default class StockValuationsPlugin extends Plugin {
 		this.addSettingTab(new StockValuationsSettingTab(this.app, this));
 	}
 
-	onunload(): void {
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS);
-	}
-
 	async activateView(): Promise<StockValuationsView> {
 		const { workspace } = this.app;
 
 		const existing = workspace.getLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS);
 		const leaf: WorkspaceLeaf =
-			existing.length > 0 ? existing[0] : workspace.getLeaf("tab");
+			existing.length > 0 ? existing[0] : workspace.getLeaf(true);
 
 		if (existing.length === 0) {
 			await leaf.setViewState({ type: VIEW_TYPE_STOCK_VALUATIONS, active: true });
 		}
-		workspace.revealLeaf(leaf);
+		await workspace.revealLeaf(leaf);
 		return leaf.view as StockValuationsView;
 	}
 
