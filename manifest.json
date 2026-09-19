@@ -5,6 +5,6 @@
 	"minAppVersion": "0.15.0",
 	"description": "Calculate WACC, DCF, Graham, and Ten Cap intrinsic value and insert the results into your note.",
 	"author": "Fernando Berlanga",
-	"authorUrl": "",
+	"authorUrl": "https://github.com/fernanluyano",
 	"isDesktopOnly": false
 }

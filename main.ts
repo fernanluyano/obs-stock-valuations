@@ -31,9 +31,18 @@ export default class StockValuationsPlugin extends Plugin {
 
 		this.addCommand({
 			id: "open-valuation-calculator",
-			name: "Open stock valuations",
+			name: "Open calculator",
 			callback: () => {
 				this.activateView();
+			},
+		});
+
+		this.addCommand({
+			id: "open-valuation-docs",
+			name: "Open help & methodology",
+			callback: async () => {
+				const view = await this.activateView();
+				view.openDocs();
 			},
 		});
 
@@ -44,18 +53,18 @@ export default class StockValuationsPlugin extends Plugin {
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS);
 	}
 
-	async activateView(): Promise<void> {
+	async activateView(): Promise<StockValuationsView> {
 		const { workspace } = this.app;
 
 		const existing = workspace.getLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS);
-		if (existing.length > 0) {
-			workspace.revealLeaf(existing[0]);
-			return;
-		}
+		const leaf: WorkspaceLeaf =
+			existing.length > 0 ? existing[0] : workspace.getLeaf("tab");
 
-		const leaf: WorkspaceLeaf = workspace.getLeaf("tab");
-		await leaf.setViewState({ type: VIEW_TYPE_STOCK_VALUATIONS, active: true });
+		if (existing.length === 0) {
+			await leaf.setViewState({ type: VIEW_TYPE_STOCK_VALUATIONS, active: true });
+		}
 		workspace.revealLeaf(leaf);
+		return leaf.view as StockValuationsView;
 	}
 
 	async loadPluginData(): Promise<void> {

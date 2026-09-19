@@ -440,3 +440,111 @@
 	font-size: var(--font-ui-smaller);
 	color: var(--text-faint);
 }
+
+.sv-modal-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-4);
+}
+
+.sv-header-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.sv-docs-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	color: var(--text-normal);
+}
+
+.sv-docs-btn-icon {
+	display: inline-flex;
+}
+
+.sv-docs {
+	max-width: 46rem;
+}
+
+.sv-docs h2 {
+	font-family: var(--sv-serif);
+	margin: 0 0 var(--size-4-4) 0;
+}
+
+.sv-docs-disclaimer {
+	background-color: rgba(var(--color-red-rgb, 224, 49, 49), 0.08);
+	border-left: 3px solid var(--color-red, #e03131);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-3) var(--size-4-4);
+	margin-bottom: var(--size-4-5);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+}
+
+.sv-docs-intro {
+	color: var(--text-muted);
+	margin-bottom: var(--size-4-3);
+}
+
+.sv-docs-section {
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: var(--size-4-4);
+	margin-top: var(--size-4-4);
+}
+
+.sv-docs-section h3 {
+	font-family: var(--sv-serif);
+	margin: 0 0 var(--size-4-2) 0;
+}
+
+.sv-docs-section p {
+	margin: 0 0 var(--size-4-2) 0;
+}
+
+.sv-docs-formula {
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-3);
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	white-space: pre-wrap;
+	overflow-x: auto;
+	margin: 0 0 var(--size-4-3) 0;
+}
+
+.sv-docs-fit {
+	background-color: var(--background-secondary);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-3) var(--size-4-4);
+	margin: var(--size-4-2) 0;
+}
+
+.sv-docs-fit-heading {
+	font-weight: var(--font-semibold);
+	margin: 0 0 var(--size-4-1) 0 !important;
+}
+
+.sv-docs-fit ul {
+	margin: 0;
+	padding-left: var(--size-4-5);
+}
+
+.sv-docs-fit li {
+	margin-bottom: var(--size-4-1);
+}
+
+.sv-docs-sources {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.sv-docs-other-list {
+	padding-left: var(--size-4-5);
+}
+
+.sv-docs-other-list li {
+	margin-bottom: var(--size-4-2);
+}

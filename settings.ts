@@ -19,7 +19,7 @@ export interface StockValuationsSettings {
 }
 
 export const DEFAULT_SETTINGS: StockValuationsSettings = {
-	riskFreeRate: 4,
+	riskFreeRate: 4.5,
 	marketRiskPremium: 5,
 	taxRate: 21,
 	maintenanceCapexPct: 50,

@@ -1,4 +1,4 @@
-import { ItemView, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
+import { App, ItemView, Modal, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
 import {
 	BarController,
 	BarElement,
@@ -27,6 +27,7 @@ import { fetchQuotePrice } from "./priceProvider";
 import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
 import { FormState, Results, SavedValuation } from "./valuationStore";
+import { DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
 
 Chart.register(
 	BarController,
@@ -53,8 +54,35 @@ const METHODS = [
 	{ label: "Ten Cap", color: "#8d6fd1", mosKey: "tenCapMos", ivKey: "tenCapIv" },
 ] as const satisfies { label: string; color: string; mosKey: keyof Results; ivKey: keyof Results }[];
 const AVERAGE_COLOR = "#94a3b8";
+const PRICE_COLOR = "#e5484d";
 
-type Screen = "table" | "form";
+type Screen = "table" | "form" | "docs";
+
+class ConfirmModal extends Modal {
+	constructor(
+		app: App,
+		private message: string,
+		private onConfirm: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createEl("p", { text: this.message });
+
+		const buttonRow = this.contentEl.createDiv({ cls: "sv-modal-buttons" });
+		buttonRow.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		const confirmBtn = buttonRow.createEl("button", { text: "Delete", cls: "mod-warning" });
+		confirmBtn.addEventListener("click", () => {
+			this.close();
+			this.onConfirm();
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
 
 export class StockValuationsView extends ItemView {
 	private static readonly MONEY_KEYS = new Set<keyof FormState>([
@@ -132,6 +160,8 @@ export class StockValuationsView extends ItemView {
 
 		if (this.screen === "table") {
 			this.renderTable(root);
+		} else if (this.screen === "docs") {
+			this.renderDocs(root);
 		} else {
 			this.renderForm(root);
 		}
@@ -196,14 +226,20 @@ export class StockValuationsView extends ItemView {
 	}
 
 	private deleteValuation(ticker: string): void {
-		if (!confirm(`Delete the saved valuation for ${ticker}?`)) return;
-		delete this.plugin.valuations[ticker];
-		this.plugin.saveValuations();
-		this.render();
+		new ConfirmModal(this.app, `Delete the saved valuation for ${ticker}?`, () => {
+			delete this.plugin.valuations[ticker];
+			this.plugin.saveValuations();
+			this.render();
+		}).open();
 	}
 
 	private backToTable(): void {
 		this.screen = "table";
+		this.render();
+	}
+
+	openDocs(): void {
+		this.screen = "docs";
 		this.render();
 	}
 
@@ -238,7 +274,15 @@ export class StockValuationsView extends ItemView {
 	private renderTable(root: HTMLElement): void {
 		const header = root.createDiv({ cls: "sv-table-header" });
 		header.createEl("h2", { text: "Stock valuations" });
-		const newBtn = header.createEl("button", { text: "+ New valuation", cls: "mod-cta" });
+
+		const headerActions = header.createDiv({ cls: "sv-header-actions" });
+		const docsBtn = headerActions.createEl("button", { cls: "sv-docs-btn" });
+		setIcon(docsBtn.createSpan({ cls: "sv-docs-btn-icon" }), "help-circle");
+		docsBtn.createSpan({ text: "Help" });
+		setTooltip(docsBtn, "Help & methodology");
+		docsBtn.addEventListener("click", () => this.openDocs());
+
+		const newBtn = headerActions.createEl("button", { text: "+ New valuation", cls: "mod-cta" });
 		newBtn.addEventListener("click", () => this.newValuation());
 
 		const tickers = Object.keys(this.plugin.valuations).sort();
@@ -458,7 +502,7 @@ export class StockValuationsView extends ItemView {
 		const priceDataset = {
 			label: "Price",
 			data: priceData,
-			backgroundColor: normalColor,
+			backgroundColor: PRICE_COLOR,
 			pointStyle: "triangle" as const,
 			pointRadius: 6,
 			pointHoverRadius: 8,
@@ -538,6 +582,61 @@ export class StockValuationsView extends ItemView {
 			text: isFinite(mos) ? formatPercent(mos) : "—",
 			cls: `sv-num ${cls}`.trim(),
 		});
+	}
+
+	// ---------------------------------------------------------------------
+	// Docs screen — methodology, sources, and per-method fit guidance.
+	// ---------------------------------------------------------------------
+
+	private renderDocs(root: HTMLElement): void {
+		const backRow = root.createDiv({ cls: "sv-back-row" });
+		const backBtn = backRow.createEl("button", { text: "← Back to table", cls: "sv-link-btn" });
+		backBtn.addEventListener("click", () => this.backToTable());
+
+		const wrap = root.createDiv({ cls: "sv-docs" });
+		wrap.createEl("h2", { text: "Help & methodology" });
+
+		const disclaimer = wrap.createDiv({ cls: "sv-docs-disclaimer" });
+		disclaimer.createEl("strong", { text: "Not investing advice." });
+		disclaimer.createSpan({
+			text: " This plugin is a calculator, not a recommendation — it's on you to judge whether its inputs, assumptions, and outputs make sense for a given company. Use it at your own risk.",
+		});
+
+		for (const p of DOCS_INTRO) {
+			wrap.createEl("p", { text: p, cls: "sv-docs-intro" });
+		}
+
+		for (const method of METHOD_DOCS) {
+			const section = wrap.createDiv({ cls: "sv-docs-section" });
+			section.createEl("h3", { text: method.title });
+			section.createEl("pre", { cls: "sv-docs-formula", text: method.formula });
+			for (const p of method.body) {
+				section.createEl("p", { text: p });
+			}
+
+			const fit = section.createDiv({ cls: "sv-docs-fit" });
+			fit.createEl("p", { text: "Does this method fit?" , cls: "sv-docs-fit-heading"});
+			const fitList = fit.createEl("ul");
+			fitList.createEl("li", { text: `Good fit: ${method.goodFor}` });
+			fitList.createEl("li", { text: `Use caution: ${method.useCaution}` });
+
+			const sourcesEl = section.createDiv({ cls: "sv-docs-sources" });
+			sourcesEl.createSpan({ text: "Sources: " });
+			method.sources.forEach((s, idx) => {
+				sourcesEl.createEl("a", { text: s.label, href: s.url, cls: "external-link" });
+				if (idx < method.sources.length - 1) sourcesEl.createSpan({ text: " · " });
+			});
+		}
+
+		const otherSection = wrap.createDiv({ cls: "sv-docs-section" });
+		otherSection.createEl("h3", { text: "Methods this plugin doesn't compute" });
+		otherSection.createEl("p", { text: DOCS_OTHER_INTRO });
+		const otherList = otherSection.createEl("ul", { cls: "sv-docs-other-list" });
+		for (const m of OTHER_METHODS) {
+			const item = otherList.createEl("li");
+			item.createEl("a", { text: m.title, href: m.url, cls: "external-link" });
+			item.createSpan({ text: ` — ${m.oneLiner}` });
+		}
 	}
 
 	// ---------------------------------------------------------------------

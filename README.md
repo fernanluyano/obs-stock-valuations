@@ -2,7 +2,7 @@
 
 An [Obsidian](https://obsidian.md) plugin that calculates a stock's intrinsic value using four classic valuation methods, and keeps the results in your vault.
 
-Open it from the ribbon icon (landmark icon) or the **Open stock valuations** command. This opens a dedicated view with a saved-valuations table; **+ New valuation** opens the calculator form.
+Open it from the ribbon icon (landmark icon) or the **Open calculator** command. This opens a dedicated view with a saved-valuations table; **+ New valuation** opens the calculator form, and the **?** icon opens the built-in help/methodology screen.
 
 ## Features
 
@@ -36,6 +36,10 @@ These five functions are pure and have no Obsidian dependency — see `tests/cal
 
 Every save/delete regenerates a markdown table of all saved valuations at a configurable vault path (`noteSync.ts`, default `Stock Valuations/Stock Valuations.md`). It's the vault-visible mirror of the plugin's own data — rewritten in full on every change, so don't hand-edit it; edits there won't persist.
 
+### Help & methodology
+
+A built-in documentation screen (`docs.ts` + `view.ts: renderDocs`), opened via the `?` icon in the table header or the **Open help & methodology** command. It covers, for each of the four methods: the formula, its source(s), and explicit "does this method fit?" guidance — none of the four suits every company, and it's on the user to judge fit before trusting a number. It also lists standard valuation methods the plugin doesn't compute (DDM, EPV, RIM, NAV, SOTP, comparable company analysis) for when none of the four apply well. Opens with a disclaimer: this is a calculator, not investing advice.
+
 ## Settings
 
 | Setting | Description |
@@ -66,6 +70,7 @@ All rates are stored and entered as percentages (`4` means `4%`); the calculator
 | `units.ts` | Scale (ones/thousands/millions/billions) types, labels, and multipliers |
 | `format.ts` | Number sanitization/formatting for form inputs and display |
 | `helpText.ts` | Per-field help tooltip copy |
+| `docs.ts` | Content for the in-app help/methodology screen — formulas, sources, per-method fit guidance |
 
 ## Development
 
