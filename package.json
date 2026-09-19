@@ -1,7 +1,7 @@
 {
 	"name": "stock-valuations",
 	"version": "0.1.0",
-	"description": "Calculate WACC, DCF, Graham, and Ten Cap intrinsic value and insert the results into your note.",
+	"description": "Calculate WACC, DCF, Graham, and Ten Cap intrinsic value, and track saved valuations in a vault summary note.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
