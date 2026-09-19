@@ -59,7 +59,7 @@ export default class StockValuationsPlugin extends Plugin {
 		if (existing.length === 0) {
 			await leaf.setViewState({ type: VIEW_TYPE_STOCK_VALUATIONS, active: true });
 		}
-		await workspace.revealLeaf(leaf);
+		void workspace.revealLeaf(leaf);
 		return leaf.view as StockValuationsView;
 	}
 

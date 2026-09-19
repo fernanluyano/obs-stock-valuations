@@ -1,6 +1,16 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type StockValuationsPlugin from "./main";
 import { SCALE_LABELS, SCALE_OPTIONS, ScaleUnit } from "./units";
+
+type NumberSettingKey =
+	| "riskFreeRate"
+	| "marketRiskPremium"
+	| "taxRate"
+	| "maintenanceCapexPct"
+	| "terminalGrowthRate"
+	| "aaaBondYield";
+
+type ScaleSettingKey = "defaultMoneyScale" | "defaultSharesScale";
 
 // Macro-level assumptions that rarely change between stocks. Per-stock numbers
 // (beta, EPS, FCF, shares, debt, price, ...) are entered fresh on every run.
@@ -111,17 +121,130 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		);
 	}
 
-	private numberSetting(
-		name: string,
-		desc: string,
-		key:
-			| "riskFreeRate"
-			| "marketRiskPremium"
-			| "taxRate"
-			| "maintenanceCapexPct"
-			| "terminalGrowthRate"
-			| "aaaBondYield"
-	): void {
+	// ---------------------------------------------------------------------
+	// Declarative settings API (Obsidian 1.13.0+) — makes these settings
+	// searchable from the global settings search. Ignored entirely by older
+	// Obsidian versions, which fall back to display() above unchanged.
+	// ---------------------------------------------------------------------
+
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [
+			{
+				type: "group",
+				heading: "Vault summary note",
+				items: [
+					{
+						name: "Note path",
+						desc: "Vault path to the auto-generated summary table (folders are created automatically). Rewritten in full on every save or delete — don't hand-edit it, changes there won't stick.",
+						control: {
+							type: "text",
+							key: "valuationsNotePath",
+							placeholder: DEFAULT_SETTINGS.valuationsNotePath,
+							defaultValue: DEFAULT_SETTINGS.valuationsNotePath,
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Default units",
+				items: [
+					this.scaleDefinition(
+						"Money scale",
+						"Applies to debt, market cap, FCF, OCF, capex, interest expense, net debt.",
+						"defaultMoneyScale"
+					),
+					this.scaleDefinition(
+						"Share count scale",
+						"Applies to diluted shares outstanding.",
+						"defaultSharesScale"
+					),
+				],
+			},
+			{
+				type: "group",
+				heading: "Default assumptions",
+				items: [
+					this.numberDefinition(
+						"Risk-free rate (RFR, %)",
+						"10-year US Treasury yield, as a percentage (e.g. 4 = 4%).",
+						"riskFreeRate"
+					),
+					this.numberDefinition(
+						"Market risk premium (MRP, %)",
+						"As a percentage (e.g. 5 = 5%).",
+						"marketRiskPremium"
+					),
+					this.numberDefinition(
+						"Tax rate (%)",
+						"Effective tax rate used in the WACC after-tax cost of debt, as a percentage.",
+						"taxRate"
+					),
+					this.numberDefinition(
+						"Maintenance capex (%)",
+						"Share of total capex treated as maintenance (vs. growth) capex, as a percentage, for the Ten Cap owner earnings calc.",
+						"maintenanceCapexPct"
+					),
+					this.numberDefinition(
+						"Terminal growth rate (%)",
+						"DCF terminal growth rate (used past year 10), as a percentage. Also pre-fills the Year 6-10 growth field.",
+						"terminalGrowthRate"
+					),
+					this.numberDefinition(
+						"AAA corporate bond yield (%)",
+						"Current AAA corporate bond yield, as a percentage, for the Graham formula.",
+						"aaaBondYield"
+					),
+				],
+			},
+		];
+	}
+
+	// Explicit overrides (rather than relying on the framework defaults) so
+	// persistence always goes through saveSettings() — this plugin's data.json
+	// stores { settings, valuations } together, not settings alone.
+	getControlValue(key: string): unknown {
+		return (this.plugin.settings as unknown as Record<string, unknown>)[key];
+	}
+
+	setControlValue(key: string, value: unknown): void {
+		const settings = this.plugin.settings as unknown as Record<string, unknown>;
+		if (key === "valuationsNotePath") {
+			const trimmed = typeof value === "string" ? value.trim() : "";
+			settings[key] = trimmed || DEFAULT_SETTINGS.valuationsNotePath;
+		} else {
+			settings[key] = value;
+		}
+		void this.plugin.saveSettings();
+	}
+
+	private numberDefinition(name: string, desc: string, key: NumberSettingKey): SettingGroupItem {
+		return {
+			name,
+			desc,
+			control: {
+				type: "number",
+				key,
+				placeholder: String(DEFAULT_SETTINGS[key]),
+				defaultValue: DEFAULT_SETTINGS[key],
+			},
+		};
+	}
+
+	private scaleDefinition(name: string, desc: string, key: ScaleSettingKey): SettingGroupItem {
+		return {
+			name,
+			desc,
+			control: {
+				type: "dropdown",
+				key,
+				options: Object.fromEntries(SCALE_OPTIONS.map((opt) => [opt, SCALE_LABELS[opt]])),
+				defaultValue: DEFAULT_SETTINGS[key],
+			},
+		};
+	}
+
+	private numberSetting(name: string, desc: string, key: NumberSettingKey): void {
 		new Setting(this.containerEl)
 			.setName(name)
 			.setDesc(desc)
@@ -139,11 +262,7 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 			);
 	}
 
-	private scaleSetting(
-		name: string,
-		desc: string,
-		key: "defaultMoneyScale" | "defaultSharesScale"
-	): void {
+	private scaleSetting(name: string, desc: string, key: ScaleSettingKey): void {
 		new Setting(this.containerEl)
 			.setName(name)
 			.setDesc(desc)

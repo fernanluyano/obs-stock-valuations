@@ -1,7 +1,7 @@
 {
 	"id": "stock-valuations",
 	"name": "Stock Valuations",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"minAppVersion": "1.4.11",
 	"description": "Calculate WACC, DCF, Graham, and Ten Cap intrinsic value, and track saved valuations in a vault summary note.",
 	"author": "Fernando Berlanga",
