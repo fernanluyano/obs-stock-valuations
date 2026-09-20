@@ -1,4 +1,4 @@
-.PHONY: install dev build typecheck test test-watch clean help
+.PHONY: install dev build typecheck test test-watch clean release help
 
 install:
 	npm install
@@ -21,6 +21,9 @@ test-watch:
 clean:
 	rm -f main.js main.js.map
 
+release:
+	scripts/release.sh
+
 help:
 	@echo "Usage: make [target]"
 	@echo ""
@@ -31,4 +34,5 @@ help:
 	@echo "  test        Run the vitest test suite once"
 	@echo "  test-watch  Run vitest in watch mode"
 	@echo "  clean       Remove build output (main.js, main.js.map)"
+	@echo "  release     Prompt for a version bump, then build, test, commit, tag, and publish"
 	@echo "  help        Show this message"

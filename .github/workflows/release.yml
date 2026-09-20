@@ -25,6 +25,9 @@ jobs:
           npm install
           npm run build
 
+      - name: Test
+        run: npm test
+
       - name: Verify tag matches manifest version
         run: |
           tag="${GITHUB_REF#refs/tags/}"
