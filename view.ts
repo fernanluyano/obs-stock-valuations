@@ -1,19 +1,5 @@
 import { App, ItemView, Modal, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
-import {
-	BarController,
-	BarElement,
-	CategoryScale,
-	Chart,
-	ChartData,
-	LinearScale,
-	Legend,
-	LineController,
-	LineElement,
-	LogarithmicScale,
-	PointElement,
-	ScatterController,
-	Tooltip,
-} from "chart.js";
+import { BarController, BarElement, CategoryScale, Chart, LinearScale, Legend, Tooltip } from "chart.js";
 import type StockValuationsPlugin from "./main";
 import {
 	calcDcf,
@@ -25,37 +11,25 @@ import {
 } from "./calculations";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
+import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundamentalsProvider";
+import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
 import { FormState, Results, SavedValuation } from "./valuationStore";
-import { DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
+import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
 
-Chart.register(
-	BarController,
-	BarElement,
-	CategoryScale,
-	LinearScale,
-	LogarithmicScale,
-	LineController,
-	LineElement,
-	PointElement,
-	ScatterController,
-	Legend,
-	Tooltip
-);
+Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
 
 export const VIEW_TYPE_STOCK_VALUATIONS = "stock-valuations-view";
 
-// Fixed per-method colors — consistent across tickers and across both charts
-// so method disagreement (not just direction) reads at a glance. Independent
-// of light/dark theme.
+// Fixed per-method colors — consistent across tickers so method disagreement
+// (not just direction) reads at a glance. Independent of light/dark theme.
 const METHODS = [
 	{ label: "DCF", color: "#4c8bf5", mosKey: "dcfMos", ivKey: "dcfIv" },
 	{ label: "Graham", color: "#f2a541", mosKey: "grahamMos", ivKey: "grahamIv" },
 	{ label: "Ten Cap", color: "#8d6fd1", mosKey: "tenCapMos", ivKey: "tenCapIv" },
 ] as const satisfies { label: string; color: string; mosKey: keyof Results; ivKey: keyof Results }[];
 const AVERAGE_COLOR = "#94a3b8";
-const PRICE_COLOR = "#e5484d";
 
 type Screen = "table" | "form" | "docs";
 
@@ -112,15 +86,20 @@ export class StockValuationsView extends ItemView {
 	private screen: Screen = "table";
 
 	private state!: FormState;
+	// The ticker this form session started as (null for a brand-new valuation) —
+	// used to tell "editing this same ticker" apart from "typed a ticker that
+	// collides with a different saved valuation" in saveValuation().
+	private originalTicker: string | null = null;
 	private moneyScale!: ScaleUnit;
 	private sharesScale!: ScaleUnit;
-	private moneyHintEls: HTMLElement[] = [];
-	private sharesHintEls: HTMLElement[] = [];
+	private fundamentalsFetchInFlight = false;
 	private results!: Results;
 	private resultsEl!: HTMLElement;
 	private heroTickerEl!: HTMLElement;
 	private heroPriceEl!: HTMLElement;
 	private charts: Chart[] = [];
+	private tablePage = 0;
+	private static readonly PAGE_SIZE = 10;
 
 	constructor(leaf: WorkspaceLeaf, plugin: StockValuationsPlugin) {
 		super(leaf);
@@ -170,10 +149,9 @@ export class StockValuationsView extends ItemView {
 
 	private resetForm(): void {
 		const s = this.plugin.settings;
+		this.originalTicker = null;
 		this.moneyScale = s.defaultMoneyScale;
 		this.sharesScale = s.defaultSharesScale;
-		this.moneyHintEls = [];
-		this.sharesHintEls = [];
 		this.state = {
 			ticker: "",
 			price: "",
@@ -184,13 +162,17 @@ export class StockValuationsView extends ItemView {
 			beta: "",
 			intExp: "",
 			totDebt: "",
-			taxRate: String(s.taxRate),
+			// Left blank, unlike the other Settings-defaulted fields below —
+			// taxRate is also fetchable (from SEC EDGAR), and a non-blank
+			// default here would mean "Fetch data" could never fill it in,
+			// since it would never look blank/zero.
+			taxRate: "",
 			mktCap: "",
 
 			netDebt: "",
 			growth1to5: "",
-			growth6to10: String(s.terminalGrowthRate),
-			terminalGrowth: String(s.terminalGrowthRate),
+			growth6to10: "",
+			terminalGrowth: "",
 			fcf: "",
 
 			eps: "",
@@ -206,12 +188,11 @@ export class StockValuationsView extends ItemView {
 	private loadIntoForm(ticker: string): void {
 		const saved = this.plugin.valuations[ticker];
 		if (!saved) return;
+		this.originalTicker = ticker;
 		this.state = { ...saved.state };
 		this.moneyScale = saved.moneyScale;
 		this.sharesScale = saved.sharesScale;
 		this.results = { ...saved.results };
-		this.moneyHintEls = [];
-		this.sharesHintEls = [];
 	}
 
 	private newValuation(): void {
@@ -244,12 +225,25 @@ export class StockValuationsView extends ItemView {
 		this.render();
 	}
 
+	// True (and warns) when the ticker currently typed into a *new* valuation
+	// collides with one already saved — called as soon as the ticker field is
+	// left, not just at save time, so the user finds out before filling in
+	// the rest of the form.
+	private warnIfDuplicateTicker(): boolean {
+		const ticker = this.state.ticker.trim().toUpperCase();
+		if (!ticker || ticker === this.originalTicker) return false;
+		if (!this.plugin.valuations[ticker]) return false;
+		new Notice(`A valuation for ${ticker} already exists — edit it from the table instead, or delete it first.`, 8000);
+		return true;
+	}
+
 	private saveValuation(): void {
 		const ticker = this.state.ticker.trim().toUpperCase();
 		if (!ticker) {
 			new Notice("Enter a ticker first.");
 			return;
 		}
+		if (this.warnIfDuplicateTicker()) return;
 		this.state.ticker = ticker;
 		this.recalculate();
 
@@ -295,6 +289,15 @@ export class StockValuationsView extends ItemView {
 			return;
 		}
 
+		const pageCount = Math.max(1, Math.ceil(tickers.length / StockValuationsView.PAGE_SIZE));
+		this.tablePage = Math.min(this.tablePage, pageCount - 1);
+		const pageStart = this.tablePage * StockValuationsView.PAGE_SIZE;
+		const pageTickers = tickers.slice(pageStart, pageStart + StockValuationsView.PAGE_SIZE);
+
+		if (pageCount > 1) {
+			this.renderPagination(root, tickers.length, pageStart, pageTickers.length, pageCount);
+		}
+
 		const wrap = root.createDiv({ cls: "sv-table-wrap" });
 		const table = wrap.createEl("table", { cls: "sv-main-table" });
 		const head = table.createEl("tr");
@@ -312,7 +315,7 @@ export class StockValuationsView extends ItemView {
 			"",
 		].forEach((h) => head.createEl("th", { text: h }));
 
-		for (const ticker of tickers) {
+		for (const ticker of pageTickers) {
 			const saved = this.plugin.valuations[ticker];
 			const r = saved.results;
 			const price = parseFloat(saved.state.price) || 0;
@@ -352,14 +355,51 @@ export class StockValuationsView extends ItemView {
 			});
 		}
 
-		this.renderMosChart(root, tickers);
-		this.renderPriceVsValueChart(root, tickers);
+		this.renderMosChart(root, pageTickers);
+
+		if (pageCount > 1) {
+			this.renderPagination(root, tickers.length, pageStart, pageTickers.length, pageCount);
+		}
+
+		this.renderYieldSpreadChart(root, pageTickers);
+	}
+
+	// Prev/next controls for the ticker table and its charts — both are keyed
+	// off the same alphabetically-sorted, paged slice of tickers.
+	private renderPagination(
+		root: HTMLElement,
+		total: number,
+		pageStart: number,
+		pageLength: number,
+		pageCount: number
+	): void {
+		const bar = root.createDiv({ cls: "sv-pagination" });
+
+		const prevBtn = bar.createEl("button", { text: "← Prev", cls: "sv-link-btn" });
+		prevBtn.disabled = this.tablePage === 0;
+		prevBtn.addEventListener("click", () => {
+			this.tablePage--;
+			this.render();
+		});
+
+		bar.createSpan({
+			cls: "sv-pagination-label",
+			text: `${pageStart + 1}–${pageStart + pageLength} of ${total} (page ${this.tablePage + 1} of ${pageCount})`,
+		});
+
+		const nextBtn = bar.createEl("button", { text: "Next →", cls: "sv-link-btn" });
+		nextBtn.disabled = this.tablePage >= pageCount - 1;
+		nextBtn.addEventListener("click", () => {
+			this.tablePage++;
+			this.render();
+		});
 	}
 
 	// ---------------------------------------------------------------------
-	// Chart 1 — standalone section below the table: one horizontal bar group
-	// per ticker, one bar per method (DCF/Graham/Ten Cap MoS%) plus a fourth
-	// bar for the ticker's average MoS across the three.
+	// Standalone section below the table: one horizontal bar group per
+	// ticker, one bar per method (DCF/Graham/Ten Cap MoS%) plus a fourth bar
+	// for the ticker's average MoS across the three. Hovering a bar also
+	// shows that method's intrinsic value alongside its MoS%.
 	// ---------------------------------------------------------------------
 
 	private renderMosChart(root: HTMLElement, tickers: string[]): void {
@@ -380,6 +420,7 @@ export class StockValuationsView extends ItemView {
 			}),
 			backgroundColor: m.color,
 			borderRadius: 3,
+			categoryPercentage: 0.65,
 		}));
 
 		const averageBar = {
@@ -392,6 +433,7 @@ export class StockValuationsView extends ItemView {
 			}),
 			backgroundColor: AVERAGE_COLOR,
 			borderRadius: 3,
+			categoryPercentage: 0.65,
 		};
 
 		this.charts.push(
@@ -405,8 +447,14 @@ export class StockValuationsView extends ItemView {
 					scales: {
 						x: {
 							title: { display: true, text: "Margin of safety (%)", color: mutedColor },
-							grid: { color: borderColor },
-							ticks: { color: mutedColor, callback: (v) => `${v}%` },
+							grid: {
+								color: (ctx) => (ctx.tick?.value === 0 ? normalColor : borderColor),
+								lineWidth: (ctx) => (ctx.tick?.value === 0 ? 1.5 : 1),
+							},
+							ticks: {
+								color: mutedColor,
+								callback: (v) => (Number(v) === 0 ? "0% (price)" : `${v}%`),
+							},
 						},
 						y: {
 							grid: { display: false },
@@ -417,8 +465,23 @@ export class StockValuationsView extends ItemView {
 						legend: { position: "top", labels: { color: mutedColor } },
 						tooltip: {
 							callbacks: {
-								label: (ctx) =>
-									`${ctx.dataset.label}: ${ctx.parsed.x === null ? "—" : formatPercent(ctx.parsed.x)}`,
+								label: (ctx) => {
+									const mosPct =
+										ctx.parsed.x === null ? "—" : formatPercent(ctx.parsed.x);
+									const ticker = tickers[ctx.dataIndex];
+									const r = this.plugin.valuations[ticker].results;
+									let iv: number | undefined;
+									if (ctx.datasetIndex < METHODS.length) {
+										iv = r[METHODS[ctx.datasetIndex].ivKey];
+									} else {
+										const ivs = METHODS.map((m) => r[m.ivKey]).filter((v) => isFinite(v));
+										iv = ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length : undefined;
+									}
+									const ivStr = iv !== undefined && isFinite(iv) ? formatCurrency(iv) : "—";
+									const price = parseFloat(this.plugin.valuations[ticker].state.price);
+									const priceStr = isFinite(price) ? formatCurrency(price) : "—";
+									return `${ctx.dataset.label}: ${mosPct} (IV ${ivStr}, Price ${priceStr})`;
+								},
 							},
 						},
 					},
@@ -428,133 +491,83 @@ export class StockValuationsView extends ItemView {
 	}
 
 	// ---------------------------------------------------------------------
-	// Chart 2 — standalone section below the MoS chart: for each ticker
-	// (x-axis, category), a dot per method's IV, a diamond for average IV,
-	// and a triangle for current price — so price and IV read off the same
-	// vertical line per ticker, compared by height. Y-axis is a dollar value,
-	// log-scaled since IV/price can span orders of magnitude across tickers;
-	// only strictly-positive values can be plotted on a log scale, so
-	// non-positive ones are skipped.
+	// Standalone section: Ten Cap yield minus the AAA bond yield assumed at
+	// save time, per ticker — the actual "ten cap" question (Munger/Buffett
+	// owner-earnings framing): is this business paying more than a safe bond?
+	// Diverging bar at 0, same visual language as the MoS chart above.
 	// ---------------------------------------------------------------------
 
-	private renderPriceVsValueChart(root: HTMLElement, tickers: string[]): void {
+	private renderYieldSpreadChart(root: HTMLElement, tickers: string[]): void {
 		const section = root.createDiv({ cls: "sv-chart-section" });
-		section.createEl("h3", { text: "Price vs. fair value" });
+		section.createEl("h3", { text: "Ten Cap yield vs. bond yield" });
 
-		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap sv-chart-canvas-wrap-fixed" });
+		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap" });
+		wrap.style.height = `${Math.max(180, tickers.length * 32 + 50)}px`;
 		const canvas = wrap.createEl("canvas");
 
 		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(root);
+		const tenCap = METHODS.find((m) => m.label === "Ten Cap")!;
 
-		type Point = { x: string; y: number; ticker: string };
-		let skipped = 0;
-
-		const datasets = METHODS.map((m) => {
-			const data: Point[] = [];
-			for (const t of tickers) {
-				const iv = this.plugin.valuations[t].results[m.ivKey];
-				if (isFinite(iv) && iv > 0) {
-					data.push({ x: t, y: iv, ticker: t });
-				} else {
-					skipped++;
-				}
-			}
-			return {
-				label: m.label,
-				data,
-				backgroundColor: m.color,
-				pointRadius: 5,
-				pointHoverRadius: 7,
-				showLine: false,
-			};
-		});
-
-		// Average IV per ticker, across the three methods — a normal dataset so
-		// it gets the same hover tooltip as the per-method points.
-		const averageData: Point[] = [];
-		for (const t of tickers) {
-			const r = this.plugin.valuations[t].results;
-			const ivs = METHODS.map((m) => r[m.ivKey]).filter((v) => isFinite(v) && v > 0);
-			if (ivs.length > 0) {
-				averageData.push({ x: t, y: ivs.reduce((a, b) => a + b, 0) / ivs.length, ticker: t });
-			}
-		}
-		const averageDataset = {
-			label: "Average",
-			data: averageData,
-			backgroundColor: AVERAGE_COLOR,
-			pointStyle: "rectRot" as const,
-			pointRadius: 6,
-			pointHoverRadius: 8,
-			showLine: false,
-		};
-
-		// Current price as its own point, at the same ticker category as the IV
-		// dots above it — lets price be compared directly against IV by height.
-		const priceData: Point[] = [];
-		for (const t of tickers) {
-			const price = parseFloat(this.plugin.valuations[t].state.price) || 0;
-			if (price > 0) {
-				priceData.push({ x: t, y: price, ticker: t });
-			} else {
-				skipped++;
-			}
-		}
-		const priceDataset = {
-			label: "Price",
-			data: priceData,
-			backgroundColor: PRICE_COLOR,
-			pointStyle: "triangle" as const,
-			pointRadius: 6,
-			pointHoverRadius: 8,
-			showLine: false,
+		const spreadOf = (t: string) => {
+			const state = this.plugin.valuations[t].state;
+			const yield_ = this.plugin.valuations[t].results.tenCapYield;
+			const bond = parseFloat(state.aaaYield);
+			return isFinite(yield_) && isFinite(bond) ? yield_ - bond : null;
 		};
 
 		this.charts.push(
 			new Chart(canvas, {
-				type: "scatter",
-				// Chart.js's scatter typings assume numeric x — they don't model a
-				// category x-axis, which works fine at runtime but not in the types.
+				type: "bar",
 				data: {
 					labels: tickers,
-					datasets: [...datasets, averageDataset, priceDataset] as unknown as ChartData<"scatter">["datasets"],
+					datasets: [
+						{
+							label: "Yield spread",
+							data: tickers.map(spreadOf),
+							backgroundColor: tenCap.color,
+							borderRadius: 3,
+							barThickness: 10,
+						},
+					],
 				},
 				options: {
+					indexAxis: "y",
 					responsive: true,
 					maintainAspectRatio: false,
 					scales: {
 						x: {
-							type: "category",
-							labels: tickers,
+							title: { display: true, text: "Ten Cap yield vs. bond yield (pp)", color: mutedColor },
+							grid: {
+								color: (ctx) => (ctx.tick?.value === 0 ? normalColor : borderColor),
+								lineWidth: (ctx) => (ctx.tick?.value === 0 ? 1.5 : 1),
+							},
+							ticks: {
+								color: mutedColor,
+								callback: (v) => (Number(v) === 0 ? "0 (bond yield)" : `${v}`),
+							},
+						},
+						y: {
 							grid: { display: false },
 							ticks: { color: normalColor },
 						},
-						y: {
-							type: "logarithmic",
-							title: { display: true, text: "Value ($, log scale)", color: mutedColor },
-							grid: { color: borderColor },
-							ticks: { color: mutedColor, callback: (v) => formatCurrency(Number(v), 0) },
-						},
 					},
 					plugins: {
-						legend: { position: "top", labels: { color: mutedColor } },
+						legend: { display: false },
 						tooltip: {
 							callbacks: {
-								title: (items) => (items[0]?.raw as Point | undefined)?.ticker ?? "",
-								label: (ctx) => `${ctx.dataset.label}: ${formatCurrency((ctx.raw as Point).y)}`,
+								label: (ctx) => {
+									const ticker = tickers[ctx.dataIndex];
+									const state = this.plugin.valuations[ticker].state;
+									const yield_ = this.plugin.valuations[ticker].results.tenCapYield;
+									const bond = parseFloat(state.aaaYield);
+									return `Ten Cap yield ${formatPercent(yield_)} vs. bond ${formatPercent(bond)}`;
+								},
 							},
 						},
 					},
 				},
 			})
 		);
-
-		if (skipped > 0) {
-			section.createEl("p", {
-				cls: "sv-chart-note",
-				text: "Some points aren't shown — price and intrinsic value must be positive to plot on a log scale.",
-			});
-		}
 	}
 
 	private chartThemeColors(root: HTMLElement): {
@@ -600,8 +613,14 @@ export class StockValuationsView extends ItemView {
 		const disclaimer = wrap.createDiv({ cls: "sv-docs-disclaimer" });
 		disclaimer.createEl("strong", { text: "Not investing advice." });
 		disclaimer.createSpan({
-			text: " This plugin is a calculator, not a recommendation — it's on you to judge whether its inputs, assumptions, and outputs make sense for a given company. Use it at your own risk.",
+			text: " This plugin is a calculator, not a recommendation — it's on you to judge whether its inputs, assumptions, and outputs make sense for a given company. That includes the data it fetches for you: prices and fundamentals are pulled from free, unofficial, or best-effort sources (see \"Where the data comes from\" below), not verified feeds. Take every auto-filled number with a grain of salt, verify anything that matters against the actual source, and use this at your own risk.",
 		});
+
+		const dataSources = wrap.createDiv({ cls: "sv-docs-section" });
+		dataSources.createEl("h3", { text: DATA_SOURCES_DOC.title });
+		for (const p of DATA_SOURCES_DOC.body) {
+			dataSources.createEl("p", { text: p });
+		}
 
 		for (const p of DOCS_INTRO) {
 			wrap.createEl("p", { text: p, cls: "sv-docs-intro" });
@@ -656,16 +675,16 @@ export class StockValuationsView extends ItemView {
 
 		const unitsRow = root.createDiv({ cls: "sv-units-row" });
 		unitsRow.createSpan({ cls: "sv-units-label", text: "Units" });
-		this.scaleDropdown(unitsRow, "Money", this.moneyScale, this.moneyHintEls, (v) => {
+		this.scaleDropdown(unitsRow, "Money", this.moneyScale, StockValuationsView.MONEY_KEYS, (v) => {
 			this.moneyScale = v;
 		});
-		this.scaleDropdown(unitsRow, "Shares", this.sharesScale, this.sharesHintEls, (v) => {
+		this.scaleDropdown(unitsRow, "Shares", this.sharesScale, StockValuationsView.SHARE_KEYS, (v) => {
 			this.sharesScale = v;
 		});
 		root.createEl("p", {
 			cls: "sv-legend",
 			text:
-				"Money scale applies to dollar aggregates (debt, cash flow, market cap, etc.); Shares scale to the share count. Price and EPS are always actual per-share dollars, never scaled. Fields marked % are percentages — enter 5 for 5%, not 0.05.",
+				"Money scale applies to dollar aggregates (debt, cash flow, market cap, etc.); Shares scale to the share count. Switching either rescales whatever's already typed, so the real value stays the same. Price and EPS are always actual per-share dollars, never scaled. Fields marked % are percentages — enter 5 for 5%, not 0.05. \"Fetch data\" (below) pulls price from Yahoo Finance and fundamentals from SEC EDGAR, but only into fields that are blank or zero — it never overwrites a value you've already typed.",
 		});
 
 		const layout = root.createDiv({ cls: "sv-layout" });
@@ -681,6 +700,17 @@ export class StockValuationsView extends ItemView {
 		});
 		yahooLink.setAttr("target", "_blank");
 		yahooLink.setAttr("rel", "noopener");
+		const fetchAllBtn = tickerInput.parentElement!.createEl("button", {
+			text: "Fetch data",
+			cls: "sv-link-btn",
+		});
+		setTooltip(
+			fetchAllBtn,
+			"Fills blank or zero fields below with price (Yahoo Finance) and fundamentals (SEC EDGAR). Never overwrites a value you've already entered."
+		);
+		fetchAllBtn.addEventListener("click", () => {
+			void this.fetchAllIntoForm(fetchAllBtn);
+		});
 		const updateYahooLink = () => {
 			const ticker = this.state.ticker.trim();
 			yahooLink.toggleClass("sv-hidden", !ticker);
@@ -690,19 +720,12 @@ export class StockValuationsView extends ItemView {
 		};
 		updateYahooLink();
 
-		const priceInput = this.field(company, "Current price", "price", "number", "perShare");
+		this.field(company, "Current price", "price", "number", "perShare");
 		this.field(company, "Diluted shares outstanding", "shares", "number", "shares");
 
-		const fetchBtn = priceInput.parentElement!.createEl("button", {
-			text: "Fetch",
-			cls: "sv-link-btn",
-		});
-		fetchBtn.addEventListener("click", () => {
-			void this.fetchPrice(priceInput, fetchBtn, true);
-		});
 		tickerInput.addEventListener("input", updateYahooLink);
 		tickerInput.addEventListener("blur", () => {
-			void this.fetchPrice(priceInput, fetchBtn, false);
+			this.warnIfDuplicateTicker();
 		});
 
 		// --- WACC section ---
@@ -787,10 +810,8 @@ export class StockValuationsView extends ItemView {
 				hint.setText("%");
 			} else if (unitKind === "money") {
 				hint.setText(SCALE_LABELS[this.moneyScale]);
-				this.moneyHintEls.push(hint);
 			} else {
 				hint.setText(SCALE_LABELS[this.sharesScale]);
-				this.sharesHintEls.push(hint);
 			}
 		}
 
@@ -799,6 +820,12 @@ export class StockValuationsView extends ItemView {
 		const input = inputRow.createEl("input", { type: isFormattedNumber ? "text" : type });
 		if (!isFormattedNumber && type === "number") input.step = "any";
 		if (isFormattedNumber) input.setAttr("inputmode", "decimal");
+		// taxRate is the one field left blank on purpose despite having a
+		// Settings default (see num()) — the placeholder makes that fallback
+		// visible instead of leaving an empty box with no explanation.
+		if (key === "taxRate") {
+			input.placeholder = `${this.plugin.settings.taxRate} (Settings default)`;
+		}
 
 		input.value = isFormattedNumber ? formatWithCommas(this.state[key]) : this.state[key];
 
@@ -828,11 +855,36 @@ export class StockValuationsView extends ItemView {
 		return input;
 	}
 
+	// Rounds a computed/converted value to at most 2 decimal places before
+	// it's written into a field — keeps scale conversions and fetched values
+	// free of floating-point noise (e.g. "10481.000000004") without forcing
+	// trailing zeros onto whole numbers ("10481", not "10481.00").
+	private roundForField(value: number): string {
+		return String(Math.round(value * 100) / 100);
+	}
+
+	// Switching the Money/Shares scale changes what a given typed number
+	// *means* (100 under "millions" is a different real amount than 100 under
+	// "billions") — so every field in that scale's group gets converted to
+	// keep representing the same real-world value, not just relabeled.
+	// Blank fields are left alone; user-typed values are rescaled exactly
+	// like fetched ones, since there's no way to tell them apart once stored.
+	private rescaleFields(keys: ReadonlySet<keyof FormState>, oldScale: ScaleUnit, newScale: ScaleUnit): void {
+		if (oldScale === newScale) return;
+		const ratio = SCALE_MULTIPLIERS[oldScale] / SCALE_MULTIPLIERS[newScale];
+		for (const key of keys) {
+			const raw = this.state[key];
+			const parsed = parseFloat(raw);
+			if (raw.trim() === "" || isNaN(parsed)) continue;
+			this.state[key] = this.roundForField(parsed * ratio);
+		}
+	}
+
 	private scaleDropdown(
 		container: HTMLElement,
 		label: string,
 		current: ScaleUnit,
-		hintEls: HTMLElement[],
+		keys: ReadonlySet<keyof FormState>,
 		onChange: (value: ScaleUnit) => void
 	): void {
 		const wrap = container.createDiv({ cls: "sv-scale-dropdown" });
@@ -844,15 +896,23 @@ export class StockValuationsView extends ItemView {
 		}
 		select.addEventListener("change", () => {
 			const value = select.value as ScaleUnit;
+			this.rescaleFields(keys, current, value);
 			onChange(value);
-			for (const el of hintEls) el.setText(SCALE_LABELS[value]);
-			this.recalculate();
+			this.render();
 		});
 	}
 
 	private num(key: keyof FormState): number {
 		const parsed = parseFloat(this.state[key]);
-		if (isNaN(parsed)) return 0;
+		if (isNaN(parsed)) {
+			// taxRate is deliberately left blank in the form itself (see
+			// resetForm) so "Fetch data" can always fill it in from SEC EDGAR —
+			// but an untouched, unfetched field should still behave sensibly
+			// in the WACC calc, so fall back to the Settings default here
+			// rather than silently computing with a 0% tax rate.
+			if (key === "taxRate") return this.plugin.settings.taxRate / 100;
+			return 0;
+		}
 		if (StockValuationsView.MONEY_KEYS.has(key)) {
 			return parsed * SCALE_MULTIPLIERS[this.moneyScale];
 		}
@@ -865,45 +925,145 @@ export class StockValuationsView extends ItemView {
 		return parsed;
 	}
 
-	// `explicit` = true for a manual "Fetch" click (always overwrites, reports errors).
-	// `explicit` = false for the auto-fetch on leaving the ticker field (only fills a
-	// blank/zero price — a non-zero value already there is a signal the user typed
-	// their own and doesn't want it silently replaced).
-	private async fetchPrice(
-		priceInput: HTMLInputElement,
-		btn: HTMLButtonElement,
-		explicit: boolean
-	): Promise<void> {
+	// A field is "unset" — and so fair game for the API to fill — if it's
+	// blank or literally 0. Anything else is treated as a value the user
+	// already entered on purpose and is never overwritten. This is the one
+	// rule every field fetched below follows, price included.
+	private isBlankOrZero(key: keyof FormState): boolean {
+		const raw = this.state[key];
+		const parsed = parseFloat(raw);
+		return raw.trim() === "" || isNaN(parsed) || parsed === 0;
+	}
+
+	// The single entry point for pulling in outside data: price from Yahoo
+	// Finance, everything else from SEC EDGAR. Always talks to the network
+	// through fetchQuotePrice / secHttpGet (both wrap Obsidian's requestUrl),
+	// which works the same way on mobile as on desktop — unlike a browser
+	// fetch(), it isn't blocked by CORS or the mobile webview. Every field it
+	// touches follows the same blank-or-zero rule as isBlankOrZero — see also
+	// the legend text above the form and this button's tooltip.
+	private async fetchAllIntoForm(btn: HTMLButtonElement): Promise<void> {
 		const ticker = this.state.ticker.trim();
 		if (!ticker) {
-			if (explicit) new Notice("Enter a ticker first.");
+			new Notice("Enter a ticker first.");
 			return;
 		}
+		if (this.fundamentalsFetchInFlight) return;
+		this.fundamentalsFetchInFlight = true;
 
-		const currentPrice = parseFloat(this.state.price);
-		if (!explicit && !isNaN(currentPrice) && currentPrice !== 0) return;
+		const originalText = btn.textContent ?? "Fetch data";
+		btn.disabled = true;
+		btn.setText("Fetching…");
 
-		const originalText = btn.textContent ?? "Fetch";
-		if (explicit) {
-			btn.disabled = true;
-			btn.setText("Fetching…");
-		}
+		const filled: string[] = [];
+		const keptExisting: string[] = [];
+		const unavailable: string[] = [];
+		const caveats: string[] = [];
+		let entityLabel = ticker.toUpperCase();
+		let fundamentalsErrorMessage: string | null = null;
 
-		const price = await fetchQuotePrice(ticker);
+		try {
+			if (this.isBlankOrZero("price")) {
+				const price = await fetchQuotePrice(ticker);
+				if (price !== null) {
+					this.state.price = this.roundForField(price);
+					filled.push("Current price");
+				} else {
+					unavailable.push("Current price (Yahoo Finance)");
+				}
+			} else {
+				keptExisting.push("Current price");
+			}
 
-		if (explicit) {
+			const result = await fetchFundamentals(ticker, secHttpGet);
+			if (isFundamentalsError(result)) {
+				fundamentalsErrorMessage = result.message;
+			} else {
+				entityLabel = `${result.entityName} (CIK ${result.cik})`;
+
+				const apply = (
+					label: string,
+					key: keyof FormState,
+					field: FieldResult,
+					kind: "money" | "shares" | "percent" | "perShare"
+				) => {
+					if (field.value === null) {
+						unavailable.push(label);
+						return;
+					}
+					if (!this.isBlankOrZero(key)) {
+						keptExisting.push(label);
+						return;
+					}
+					let scaled: number;
+					if (kind === "money") scaled = field.value / SCALE_MULTIPLIERS[this.moneyScale];
+					else if (kind === "shares") scaled = field.value / SCALE_MULTIPLIERS[this.sharesScale];
+					else if (kind === "percent") scaled = field.value * 100;
+					else scaled = field.value; // perShare — always actual dollars, never scaled
+					this.state[key] = this.roundForField(scaled);
+					filled.push(label);
+				};
+
+				apply("TTM diluted EPS", "eps", result.eps, "perShare");
+				apply("TTM operating cash flow", "ocf", result.ocf, "money");
+				apply("TTM capex", "capex", result.capex, "money");
+				apply("TTM free cash flow", "fcf", result.fcf, "money");
+				apply("TTM interest expense", "intExp", result.intExp, "money");
+				apply("Diluted shares outstanding", "shares", result.shares, "shares");
+				apply("Total debt", "totDebt", result.totDebt, "money");
+				apply("Net debt", "netDebt", result.netDebt, "money");
+				apply("Tax rate", "taxRate", result.taxRate, "percent");
+
+				// Total debt has no single canonical XBRL tag, so it's always
+				// worth a second look; a TTM-capable field that fell back to a
+				// bare fiscal-year figure (no matching year-ago period to roll
+				// forward) is a real deviation from "trailing twelve months" —
+				// both are surfaced here rather than left silently inside the
+				// field's own note.
+				if (filled.includes("Total debt")) caveats.push(result.totDebt.note);
+				const ttmFields: [string, FieldResult][] = [
+					["TTM diluted EPS", result.eps],
+					["TTM operating cash flow", result.ocf],
+					["TTM capex", result.capex],
+					["TTM interest expense", result.intExp],
+				];
+				for (const [label, field] of ttmFields) {
+					if (filled.includes(label) && field.basis === "fiscal-year") {
+						caveats.push(`${label}: ${field.note}`);
+					}
+				}
+			}
+
+			// Market cap isn't fetched from either source — derive it from
+			// price × shares once both are known, under the same blank-or-zero
+			// rule as every fetched field.
+			if (this.isBlankOrZero("mktCap")) {
+				const price = parseFloat(this.state.price);
+				const shares = parseFloat(this.state.shares);
+				if (!isNaN(price) && price > 0 && !isNaN(shares) && shares > 0) {
+					const rawMktCap = price * (shares * SCALE_MULTIPLIERS[this.sharesScale]);
+					this.state.mktCap = this.roundForField(rawMktCap / SCALE_MULTIPLIERS[this.moneyScale]);
+					filled.push("Market capitalization (price × shares)");
+				}
+			} else {
+				keptExisting.push("Market capitalization");
+			}
+		} finally {
 			btn.disabled = false;
 			btn.setText(originalText);
+			this.fundamentalsFetchInFlight = false;
 		}
 
-		if (price === null) {
-			if (explicit) new Notice(`Couldn't fetch a price for ${ticker}.`);
-			return;
-		}
+		this.render();
 
-		this.state.price = String(price);
-		priceInput.value = formatWithCommas(this.state.price);
-		this.recalculate();
+		const parts: string[] = [];
+		if (filled.length > 0) parts.push(`Filled: ${filled.join(", ")}.`);
+		if (unavailable.length > 0) parts.push(`Not available: ${unavailable.join(", ")}.`);
+		if (keptExisting.length > 0) parts.push(`Left as-is (already had a value): ${keptExisting.join(", ")}.`);
+		if (caveats.length > 0) parts.push(`Worth double-checking — ${caveats.join(" ")}`);
+		if (fundamentalsErrorMessage) parts.push(`Fundamentals (SEC EDGAR) failed: ${fundamentalsErrorMessage}`);
+		if (parts.length === 0) parts.push("Nothing to fill — every field already had a value.");
+		new Notice(`${entityLabel}: ${parts.join(" ")}`, 15000);
 	}
 
 	private recalculate(): void {

@@ -21,6 +21,26 @@ export interface OtherMethod {
 	url: string;
 }
 
+export interface DataSourceDoc {
+	title: string;
+	body: string[];
+}
+
+// Rendered near the top of the docs screen, above the per-method breakdowns —
+// this plugin fetches data on the user's behalf (price and fundamentals) and
+// neither source is a verified, official feed, so this exists to make sure
+// that's never mistaken for ground truth.
+export const DATA_SOURCES_DOC: DataSourceDoc = {
+	title: "Where the data comes from",
+	body: [
+		"\"Fetch data\" (next to the ticker field) fills in price from Yahoo Finance and fundamentals (EPS, cash flow, debt, shares, tax rate) from SEC EDGAR in one click — but only into fields that are blank or zero; it never overwrites a value you've already typed. Market cap is filled in too, computed as price × shares rather than fetched from either source.",
+		"Yahoo's price comes from its public chart data — free, no account or key needed, but an unofficial, undocumented endpoint. Yahoo can rate-limit it, change its format, or go down without notice, and the quote itself can lag the real market by a few minutes. Cross-check it against a price you trust before relying on it.",
+		"Fundamentals come directly from a company's own filings via SEC EDGAR's XBRL data — about as authoritative as free data gets, but not a finished product. Trailing-twelve-month figures are computed from the filings (latest fiscal year + year-to-date − year-ago year-to-date), not copied verbatim. Total debt has no single tag a company is required to file — different companies tag it completely differently, and it's been the single most error-prone field in practice: some filers bundle finance/lease obligations in with it (running the total higher than \"debt\" alone), others don't use a long-term-debt tag at all and would be silently understated without a fallback. Anything that can't be derived reliably is left blank rather than guessed, but \"derived successfully\" still isn't the same as \"exactly what you'd get by reading the 10-K yourself\" — total debt above all is worth checking against the actual balance sheet. Fundamentals only cover US-listed companies that file with the SEC.",
+		"Tax rate is a special case: it starts blank specifically so a fetch can fill it in with the company's real effective rate; if you never fetch and leave it blank, the WACC calculation quietly falls back to your Settings default instead.",
+		"Every fetched field stays fully editable, and the confirmation message after a fetch spells out exactly what was filled, what was left as-is, and what's worth double-checking — read it. Treat anything this plugin fetches for you as a solid starting point, not a verified fact, and check it against the actual filing or price feed before using it to make a real decision.",
+	],
+};
+
 export const DOCS_INTRO: string[] = [
 	"This plugin runs four independent valuation methods off the same inputs. Each one encodes a different set of assumptions about how a business creates value — none of them is \"the\" right answer, and they will often disagree with each other.",
 	"No method here is suitable for every company. It's on you, the user, to judge whether a given method's assumptions actually hold for the business you're valuing before you trust its output — see \"Does this method fit?\" on each one below for pointers, but the judgment call is yours to make. The most useful signal is often agreement (or disagreement) between two or three methods on a company they're each suited to, not any single number in isolation.",

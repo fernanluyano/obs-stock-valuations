@@ -333,6 +333,25 @@ td.sv-num {
 	overflow-x: auto;
 }
 
+.sv-pagination {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--size-4-4);
+	margin: var(--size-4-3) 0;
+}
+
+.sv-pagination-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.sv-link-btn:disabled {
+	color: var(--text-faint);
+	cursor: default;
+	text-decoration: none;
+}
+
 .sv-main-table {
 	width: 100%;
 	border-collapse: collapse;
@@ -428,16 +447,6 @@ td.sv-num {
 .sv-chart-canvas-wrap {
 	position: relative;
 	width: 100%;
-}
-
-.sv-chart-canvas-wrap-fixed {
-	height: 420px;
-}
-
-.sv-chart-note {
-	margin: var(--size-4-3) 0 0 0;
-	font-size: var(--font-ui-smaller);
-	color: var(--text-faint);
 }
 
 .sv-modal-buttons {
