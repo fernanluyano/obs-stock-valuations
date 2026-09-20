@@ -412,11 +412,18 @@ export class StockValuationsView extends ItemView {
 
 		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(root);
 
+		// Clamp the floor to -100% so a single wildly negative MOS (e.g. a
+		// method dividing by a near-zero intrinsic value) doesn't blow out the
+		// axis scale and squash every other bar. The tooltip still reports the
+		// true, uncapped value.
+		const MOS_FLOOR = -100;
+		const clampMos = (v: number) => Math.max(v, MOS_FLOOR);
+
 		const datasets = METHODS.map((m) => ({
 			label: m.label,
 			data: tickers.map((t) => {
 				const v = this.plugin.valuations[t].results[m.mosKey];
-				return isFinite(v) ? v : null;
+				return isFinite(v) ? clampMos(v) : null;
 			}),
 			backgroundColor: m.color,
 			borderRadius: 3,
@@ -429,12 +436,19 @@ export class StockValuationsView extends ItemView {
 				const r = this.plugin.valuations[t].results;
 				const vals = METHODS.map((m) => r[m.mosKey]).filter((v) => isFinite(v));
 				if (vals.length === 0) return null;
-				return vals.reduce((a, b) => a + b, 0) / vals.length;
+				return clampMos(vals.reduce((a, b) => a + b, 0) / vals.length);
 			}),
 			backgroundColor: AVERAGE_COLOR,
 			borderRadius: 3,
 			categoryPercentage: 0.65,
 		};
+
+		// Force a symmetric axis around 0 — otherwise Chart.js auto-scales to
+		// the data's actual min/max, which shifts 0 off-center (and shifts the
+		// tick labels) depending on which tickers happen to be on screen.
+		const allValues = [...datasets, averageBar].flatMap((d) => d.data).filter((v): v is number => v !== null);
+		const maxAbs = allValues.length ? Math.max(...allValues.map(Math.abs)) : 0;
+		const axisBound = Math.max(25, Math.ceil(maxAbs / 25) * 25);
 
 		this.charts.push(
 			new Chart(canvas, {
@@ -446,6 +460,8 @@ export class StockValuationsView extends ItemView {
 					maintainAspectRatio: false,
 					scales: {
 						x: {
+							min: -axisBound,
+							max: axisBound,
 							title: { display: true, text: "Margin of safety (%)", color: mutedColor },
 							grid: {
 								color: (ctx) => (ctx.tick?.value === 0 ? normalColor : borderColor),
@@ -466,17 +482,25 @@ export class StockValuationsView extends ItemView {
 						tooltip: {
 							callbacks: {
 								label: (ctx) => {
-									const mosPct =
-										ctx.parsed.x === null ? "—" : formatPercent(ctx.parsed.x);
 									const ticker = tickers[ctx.dataIndex];
 									const r = this.plugin.valuations[ticker].results;
+									// Report the true, uncapped MOS here even though the bar
+									// itself is clamped at MOS_FLOOR for display.
+									let trueMos: number | undefined;
 									let iv: number | undefined;
 									if (ctx.datasetIndex < METHODS.length) {
+										trueMos = r[METHODS[ctx.datasetIndex].mosKey];
 										iv = r[METHODS[ctx.datasetIndex].ivKey];
 									} else {
+										const mosVals = METHODS.map((m) => r[m.mosKey]).filter((v) => isFinite(v));
+										trueMos = mosVals.length
+											? mosVals.reduce((a, b) => a + b, 0) / mosVals.length
+											: undefined;
 										const ivs = METHODS.map((m) => r[m.ivKey]).filter((v) => isFinite(v));
 										iv = ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length : undefined;
 									}
+									const mosPct =
+										trueMos !== undefined && isFinite(trueMos) ? formatPercent(trueMos) : "—";
 									const ivStr = iv !== undefined && isFinite(iv) ? formatCurrency(iv) : "—";
 									const price = parseFloat(this.plugin.valuations[ticker].state.price);
 									const priceStr = isFinite(price) ? formatCurrency(price) : "—";
