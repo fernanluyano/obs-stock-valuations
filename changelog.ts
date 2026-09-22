@@ -8,6 +8,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.4.0",
+		highlights: [
+			'🔄 New "Refresh prices" button on the table — updates every ticker\'s price in one click, and the vault summary note along with it',
+			"🧮 Market cap is now always computed as price × shares, so it — and WACC, and DCF IV — stay accurate automatically instead of needing a manual edit",
+			"📱 Fixed action icons (edit, delete, research links) not rendering on mobile",
+			"✨ This \"What's new\" screen — shows once after an update, same as what you're reading right now",
+		],
+	},
+	{
 		version: "0.3.0",
 		highlights: [
 			"🔗 Link a research note to any ticker straight from the table",
