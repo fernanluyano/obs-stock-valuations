@@ -13,14 +13,7 @@ import {
 } from "obsidian";
 import { BarController, BarElement, CategoryScale, Chart, LinearScale, Legend, Tooltip } from "chart.js";
 import type StockValuationsPlugin from "./main";
-import {
-	calcDcf,
-	calcGraham,
-	calcTenCap,
-	calcWacc,
-	marginOfSafety,
-	ownerEarningsYield,
-} from "./calculations";
+import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
 import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundamentalsProvider";
@@ -29,6 +22,7 @@ import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput }
 import { HELP_TEXT } from "./helpText";
 import { FormState, Results, SavedValuation } from "./valuationStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
+import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
 import { ensureFolderExists } from "./noteSync";
 
@@ -45,7 +39,7 @@ const METHODS = [
 ] as const satisfies { label: string; color: string; mosKey: keyof Results; ivKey: keyof Results }[];
 const AVERAGE_COLOR = "#94a3b8";
 
-type Screen = "table" | "form" | "docs";
+type Screen = "table" | "form" | "docs" | "changelog";
 
 class ConfirmModal extends Modal {
 	constructor(
@@ -100,30 +94,9 @@ class LinkNoteSuggestModal extends FuzzySuggestModal<TFile> {
 }
 
 export class StockValuationsView extends ItemView {
-	private static readonly MONEY_KEYS = new Set<keyof FormState>([
-		"intExp",
-		"totDebt",
-		"mktCap",
-		"netDebt",
-		"fcf",
-		"ocf",
-		"capex",
-	]);
-	private static readonly SHARE_KEYS = new Set<keyof FormState>(["shares"]);
-	private static readonly PERCENT_KEYS = new Set<keyof FormState>([
-		"rfr",
-		"mrp",
-		"taxRate",
-		"growth1to5",
-		"growth6to10",
-		"terminalGrowth",
-		"grahamGrowth",
-		"aaaYield",
-		"mainPct",
-	]);
-
 	private plugin: StockValuationsPlugin;
 	private screen: Screen = "table";
+	private changelogVersion: string | null = null;
 
 	private state!: FormState;
 	// The ticker this form session started as (null for a brand-new valuation) —
@@ -133,10 +106,12 @@ export class StockValuationsView extends ItemView {
 	private moneyScale!: ScaleUnit;
 	private sharesScale!: ScaleUnit;
 	private fundamentalsFetchInFlight = false;
+	private priceRefreshInFlight = false;
 	private results!: Results;
 	private resultsEl!: HTMLElement;
 	private heroTickerEl!: HTMLElement;
 	private heroPriceEl!: HTMLElement;
+	private mktCapInput!: HTMLInputElement;
 	private charts: Chart[] = [];
 	private tablePage = 0;
 	private static readonly PAGE_SIZE = 10;
@@ -182,6 +157,8 @@ export class StockValuationsView extends ItemView {
 			this.renderTable(root);
 		} else if (this.screen === "docs") {
 			this.renderDocs(root);
+		} else if (this.screen === "changelog") {
+			this.renderChangelog(root);
 		} else {
 			this.renderForm(root);
 		}
@@ -265,6 +242,14 @@ export class StockValuationsView extends ItemView {
 		this.render();
 	}
 
+	// Called once by the plugin on the first load after an update — shows
+	// only the entry for the version just landed on, not the full history.
+	openChangelog(version: string): void {
+		this.changelogVersion = version;
+		this.screen = "changelog";
+		this.render();
+	}
+
 	// True (and warns) when the ticker currently typed into a *new* valuation
 	// collides with one already saved — called as soon as the ticker field is
 	// left, not just at save time, so the user finds out before filling in
@@ -325,10 +310,24 @@ export class StockValuationsView extends ItemView {
 		setTooltip(docsBtn, "Help & methodology");
 		docsBtn.addEventListener("click", () => this.openDocs());
 
+		const tickers = Object.keys(this.plugin.valuations).sort();
+
+		const refreshBtn = headerActions.createEl("button", { cls: "sv-docs-btn mod-cta" });
+		const refreshIcon = refreshBtn.createSpan({ cls: "sv-docs-btn-icon" });
+		setIcon(refreshIcon, "refresh-cw");
+		const refreshLabel = refreshBtn.createSpan({ text: "Refresh prices" });
+		setTooltip(
+			refreshBtn,
+			"Updates each ticker's price only — recomputes market cap, WACC, DCF IV, and every margin of safety off the new price. Leaves fundamentals untouched."
+		);
+		refreshBtn.toggleClass("sv-hidden", tickers.length === 0);
+		refreshBtn.addEventListener("click", () => {
+			void this.refreshAllPrices(refreshBtn, refreshLabel);
+		});
+
 		const newBtn = headerActions.createEl("button", { text: "+ New valuation", cls: "mod-cta" });
 		newBtn.addEventListener("click", () => this.newValuation());
 
-		const tickers = Object.keys(this.plugin.valuations).sort();
 		if (tickers.length === 0) {
 			root.createEl("p", {
 				cls: "sv-empty-state",
@@ -398,7 +397,7 @@ export class StockValuationsView extends ItemView {
 
 			const actionsCell = tr.createEl("td", { cls: "sv-actions-cell" });
 			const editBtn = actionsCell.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(editBtn, "pencil");
+			setIcon(editBtn.createSpan(), "pencil");
 			setTooltip(editBtn, "Edit");
 			editBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -406,7 +405,7 @@ export class StockValuationsView extends ItemView {
 			});
 
 			const deleteBtn = actionsCell.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(deleteBtn, "trash-2");
+			setIcon(deleteBtn.createSpan(), "trash-2");
 			setTooltip(deleteBtn, "Delete");
 			deleteBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -691,7 +690,7 @@ export class StockValuationsView extends ItemView {
 			const wrap = cell.createSpan({ cls: "sv-research-linked" });
 
 			const openBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(openBtn, "file-text");
+			setIcon(openBtn.createSpan(), "file-text");
 			setTooltip(openBtn, `Open ${file.basename}`);
 			openBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -699,7 +698,7 @@ export class StockValuationsView extends ItemView {
 			});
 
 			const unlinkBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(unlinkBtn, "unlink");
+			setIcon(unlinkBtn.createSpan(), "unlink");
 			setTooltip(unlinkBtn, "Remove link (the note itself is untouched)");
 			unlinkBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -862,6 +861,34 @@ export class StockValuationsView extends ItemView {
 	}
 
 	// ---------------------------------------------------------------------
+	// Changelog screen — shown once, automatically, the first time the view
+	// opens after an update. Only the entry for the version just landed on,
+	// never the full history (see openChangelog).
+	// ---------------------------------------------------------------------
+
+	private renderChangelog(root: HTMLElement): void {
+		const backRow = root.createDiv({ cls: "sv-back-row" });
+		const backBtn = backRow.createEl("button", { text: "← Back to table", cls: "sv-link-btn" });
+		backBtn.addEventListener("click", () => this.backToTable());
+
+		const wrap = root.createDiv({ cls: "sv-docs sv-changelog" });
+		const version = this.changelogVersion;
+		const entry = version ? getChangelogEntry(version) : undefined;
+
+		wrap.createEl("h2", { text: `✨ What's new in ${version ?? "this version"}` });
+
+		if (!entry) {
+			wrap.createEl("p", { text: "No release notes for this version." });
+			return;
+		}
+
+		const list = wrap.createEl("ul", { cls: "sv-changelog-list" });
+		for (const highlight of entry.highlights) {
+			list.createEl("li", { text: highlight });
+		}
+	}
+
+	// ---------------------------------------------------------------------
 	// Form screen — add or edit a single ticker's inputs.
 	// ---------------------------------------------------------------------
 
@@ -877,10 +904,10 @@ export class StockValuationsView extends ItemView {
 
 		const unitsRow = root.createDiv({ cls: "sv-units-row" });
 		unitsRow.createSpan({ cls: "sv-units-label", text: "Units" });
-		this.scaleDropdown(unitsRow, "Money", this.moneyScale, StockValuationsView.MONEY_KEYS, (v) => {
+		this.scaleDropdown(unitsRow, "Money", this.moneyScale, MONEY_KEYS, (v) => {
 			this.moneyScale = v;
 		});
-		this.scaleDropdown(unitsRow, "Shares", this.sharesScale, StockValuationsView.SHARE_KEYS, (v) => {
+		this.scaleDropdown(unitsRow, "Shares", this.sharesScale, SHARE_KEYS, (v) => {
 			this.sharesScale = v;
 		});
 		root.createEl("p", {
@@ -938,7 +965,7 @@ export class StockValuationsView extends ItemView {
 		this.field(wacc, "Interest expense", "intExp", "number", "money");
 		this.field(wacc, "Total debt", "totDebt", "number", "money");
 		this.field(wacc, "Tax rate", "taxRate", "number", "percent");
-		this.field(wacc, "Market capitalization", "mktCap", "number", "money");
+		this.mktCapInput = this.field(wacc, "Market capitalization", "mktCap", "number", "money", { readOnly: true });
 
 		// --- DCF section ---
 		const dcf = this.section(formCol, "DCF");
@@ -981,7 +1008,8 @@ export class StockValuationsView extends ItemView {
 		label: string,
 		key: keyof FormState,
 		type: "text" | "number" = "number",
-		unitKind?: "money" | "shares" | "perShare" | "percent"
+		unitKind?: "money" | "shares" | "perShare" | "percent",
+		options?: { readOnly?: boolean }
 	): HTMLInputElement {
 		const wrap = container.createDiv({ cls: "sv-field" });
 		const labelRow = wrap.createDiv({ cls: "sv-field-label-row" });
@@ -1030,6 +1058,16 @@ export class StockValuationsView extends ItemView {
 		}
 
 		input.value = isFormattedNumber ? formatWithCommas(this.state[key]) : this.state[key];
+
+		if (options?.readOnly) {
+			// Computed, not typed in (market cap = price × shares) — no focus/blur/
+			// input wiring at all, just a live display recalculate() keeps in sync.
+			input.readOnly = true;
+			input.tabIndex = -1;
+			input.addClass("sv-readonly-field");
+			setTooltip(input, "Computed as price × shares — not an input you can edit.");
+			return input;
+		}
 
 		if (isFormattedNumber) {
 			input.addEventListener("focus", () => {
@@ -1105,26 +1143,7 @@ export class StockValuationsView extends ItemView {
 	}
 
 	private num(key: keyof FormState): number {
-		const parsed = parseFloat(this.state[key]);
-		if (isNaN(parsed)) {
-			// taxRate is deliberately left blank in the form itself (see
-			// resetForm) so "Fetch data" can always fill it in from SEC EDGAR —
-			// but an untouched, unfetched field should still behave sensibly
-			// in the WACC calc, so fall back to the Settings default here
-			// rather than silently computing with a 0% tax rate.
-			if (key === "taxRate") return this.plugin.settings.taxRate / 100;
-			return 0;
-		}
-		if (StockValuationsView.MONEY_KEYS.has(key)) {
-			return parsed * SCALE_MULTIPLIERS[this.moneyScale];
-		}
-		if (StockValuationsView.SHARE_KEYS.has(key)) {
-			return parsed * SCALE_MULTIPLIERS[this.sharesScale];
-		}
-		if (StockValuationsView.PERCENT_KEYS.has(key)) {
-			return parsed / 100;
-		}
-		return parsed;
+		return numFromState(this.state, key, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
 	}
 
 	// A field is "unset" — and so fair game for the API to fill — if it's
@@ -1236,20 +1255,6 @@ export class StockValuationsView extends ItemView {
 				}
 			}
 
-			// Market cap isn't fetched from either source — derive it from
-			// price × shares once both are known, under the same blank-or-zero
-			// rule as every fetched field.
-			if (this.isBlankOrZero("mktCap")) {
-				const price = parseFloat(this.state.price);
-				const shares = parseFloat(this.state.shares);
-				if (!isNaN(price) && price > 0 && !isNaN(shares) && shares > 0) {
-					const rawMktCap = price * (shares * SCALE_MULTIPLIERS[this.sharesScale]);
-					this.state.mktCap = this.roundForField(rawMktCap / SCALE_MULTIPLIERS[this.moneyScale]);
-					filled.push("Market capitalization (price × shares)");
-				}
-			} else {
-				keptExisting.push("Market capitalization");
-			}
 		} finally {
 			btn.disabled = false;
 			btn.setText(originalText);
@@ -1268,52 +1273,61 @@ export class StockValuationsView extends ItemView {
 		new Notice(`${entityLabel}: ${parts.join(" ")}`, 15000);
 	}
 
+	// Refreshes just the price for every saved valuation (table button, not the
+	// per-ticker form) — no fundamentals are touched. Everything price-derived
+	// is recomputed off the new price: MoS and Ten Cap yield always; market cap
+	// too (price × shares), which in turn moves WACC and DCF IV. Graham and Ten
+	// Cap IV don't depend on WACC/market cap, so those stay fixed.
+	private async refreshAllPrices(btn: HTMLButtonElement, label: HTMLElement): Promise<void> {
+		const tickers = Object.keys(this.plugin.valuations).sort();
+		if (tickers.length === 0 || this.priceRefreshInFlight) return;
+		this.priceRefreshInFlight = true;
+
+		const originalText = label.textContent ?? "Refresh prices";
+		btn.disabled = true;
+		label.setText("Refreshing…");
+
+		let updated = 0;
+		const failed: string[] = [];
+
+		try {
+			for (const ticker of tickers) {
+				const record = this.plugin.valuations[ticker];
+				if (!record) continue;
+				const price = await fetchQuotePrice(ticker);
+				if (price === null) {
+					failed.push(ticker);
+					continue;
+				}
+				record.state.price = this.roundForField(price);
+				record.results = computeResultsForState(
+					record.state,
+					record.moneyScale,
+					record.sharesScale,
+					this.plugin.settings.taxRate
+				);
+				updated++;
+			}
+		} finally {
+			btn.disabled = false;
+			label.setText(originalText);
+			this.priceRefreshInFlight = false;
+		}
+
+		if (updated > 0) {
+			void this.plugin.saveValuations();
+		}
+		this.render();
+
+		const parts = [`Updated ${updated} of ${tickers.length} price${tickers.length === 1 ? "" : "s"}.`];
+		if (failed.length > 0) parts.push(`Couldn't fetch: ${failed.join(", ")}.`);
+		new Notice(parts.join(" "), 10000);
+	}
+
 	private recalculate(): void {
-		const wacc = calcWacc({
-			rfr: this.num("rfr"),
-			mrp: this.num("mrp"),
-			beta: this.num("beta"),
-			intExp: this.num("intExp"),
-			totDebt: this.num("totDebt"),
-			taxRate: this.num("taxRate"),
-			mktCap: this.num("mktCap"),
-		});
-
-		const dcfIv = calcDcf({
-			netDebt: this.num("netDebt"),
-			shares: this.num("shares"),
-			growth1to5: this.num("growth1to5"),
-			growth6to10: this.num("growth6to10"),
-			terminalGrowth: this.num("terminalGrowth"),
-			wacc,
-			fcf: this.num("fcf"),
-		});
-
-		const grahamIv = calcGraham({
-			eps: this.num("eps"),
-			growth: this.num("grahamGrowth"),
-			aaaYield: this.num("aaaYield"),
-		});
-
-		const tenCap = calcTenCap({
-			ocf: this.num("ocf"),
-			capex: this.num("capex"),
-			mainPct: this.num("mainPct"),
-			shares: this.num("shares"),
-		});
-
-		const price = this.num("price");
-		this.results = {
-			wacc,
-			dcfIv,
-			dcfMos: marginOfSafety(dcfIv, price),
-			grahamIv,
-			grahamMos: marginOfSafety(grahamIv, price),
-			tenCapIv: tenCap.iv,
-			tenCapYield: ownerEarningsYield(tenCap.ownerEarnings, this.num("shares"), price),
-			tenCapMos: marginOfSafety(tenCap.iv, price),
-		};
-
+		// Mutates this.state.mktCap as a side effect — see computeResultsForState.
+		this.results = computeResultsForState(this.state, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
+		this.mktCapInput.value = formatWithCommas(this.state.mktCap);
 		this.renderResults();
 	}
 

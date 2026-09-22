@@ -212,6 +212,12 @@
 	display: none;
 }
 
+.sv-readonly-field {
+	cursor: default;
+	color: var(--text-muted);
+	background-color: var(--background-secondary);
+}
+
 .sv-field input:focus {
 	border-bottom: 2px solid var(--interactive-accent);
 	outline: none;
@@ -456,6 +462,16 @@ td.sv-num {
 	box-shadow: none;
 	color: var(--text-muted);
 	cursor: pointer;
+	/* Without this, iOS/mobile WebKit can render native button chrome (a
+	   filled, rounded pill) instead of the transparent background above,
+	   hiding the icon inside it. */
+	appearance: none;
+	-webkit-appearance: none;
+}
+
+.sv-icon-btn > span {
+	display: inline-flex;
+	--icon-size: var(--icon-size-s, 16px);
 }
 
 .sv-icon-btn:hover {
@@ -502,6 +518,12 @@ td.sv-num {
 	color: var(--text-normal);
 }
 
+/* mod-cta (Obsidian's own accent-button class) sets its own background/text
+   color — more specific than .sv-docs-btn alone so it wins the color above. */
+.sv-docs-btn.mod-cta {
+	color: var(--text-on-accent);
+}
+
 .sv-docs-btn-icon {
 	display: inline-flex;
 }
@@ -513,6 +535,20 @@ td.sv-num {
 .sv-docs h2 {
 	font-family: var(--sv-serif);
 	margin: 0 0 var(--size-4-4) 0;
+}
+
+.sv-changelog-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-3);
+}
+
+.sv-changelog-list li {
+	font-size: var(--font-ui-medium);
+	line-height: 1.5;
 }
 
 .sv-docs-disclaimer {

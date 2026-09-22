@@ -11,6 +11,10 @@ export interface FormState {
 	intExp: string;
 	totDebt: string;
 	taxRate: string;
+	// Always derived (price × shares), never typed in — computeResultsForState
+	// (valuationCalc.ts) is the only writer. Kept as a stored field, same as
+	// every other money input, purely so it round-trips in the saved JSON and
+	// the summary note like everything else.
 	mktCap: string;
 
 	netDebt: string;

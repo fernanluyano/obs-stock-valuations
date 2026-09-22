@@ -22,7 +22,7 @@ export const HELP_TEXT: Record<string, string> = {
 		"Effective tax rate: the company's actual tax rate, used for the after-tax cost of debt. Left blank by default so a fetch can fill it in — if you leave it blank and never fetch, your Settings default is used instead." +
 		SEC_NOTE,
 	mktCap:
-		"Market capitalization: share price × total shares outstanding. Auto-filled as price × shares once both are known — only as accurate as those two inputs.",
+		"Market capitalization: share price × total shares outstanding. Always computed live from those two fields — not an input you can override.",
 
 	netDebt: "Net debt: total debt minus cash and cash equivalents. Subtracted from enterprise value to get equity value." + SEC_NOTE,
 	growth1to5: "Expected free cash flow growth rate for years 1 through 5 of the DCF projection.",

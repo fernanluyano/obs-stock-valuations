@@ -12,11 +12,13 @@ import { syncValuationsNote } from "./noteSync";
 interface PluginData {
 	settings: StockValuationsSettings;
 	valuations: ValuationTable;
+	lastSeenVersion?: string;
 }
 
 export default class StockValuationsPlugin extends Plugin {
 	settings!: StockValuationsSettings;
 	valuations!: ValuationTable;
+	private lastSeenVersion: string | undefined;
 
 	async onload(): Promise<void> {
 		await this.loadPluginData();
@@ -48,6 +50,31 @@ export default class StockValuationsPlugin extends Plugin {
 		});
 
 		this.addSettingTab(new StockValuationsSettingTab(this.app, this));
+
+		// Deferred to onLayoutReady rather than run inline here — opening a new
+		// leaf while Obsidian is still restoring the workspace on startup can
+		// fight with that restoration.
+		this.app.workspace.onLayoutReady(() => {
+			void this.maybeShowChangelog();
+		});
+	}
+
+	// Shows the current version's release notes exactly once, the first time
+	// the plugin loads after an update — never on first install, and never
+	// the full history, just whatever version was just landed on.
+	private async maybeShowChangelog(): Promise<void> {
+		const currentVersion = this.manifest.version;
+		const isUpdate = this.lastSeenVersion !== undefined && this.lastSeenVersion !== currentVersion;
+
+		if (this.lastSeenVersion !== currentVersion) {
+			this.lastSeenVersion = currentVersion;
+			await this.persist();
+		}
+
+		if (isUpdate) {
+			const view = await this.activateView();
+			view.openChangelog(currentVersion);
+		}
 	}
 
 	async activateView(): Promise<StockValuationsView> {
@@ -68,6 +95,7 @@ export default class StockValuationsPlugin extends Plugin {
 		const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
 		this.valuations = data.valuations ?? {};
+		this.lastSeenVersion = data.lastSeenVersion;
 	}
 
 	async saveSettings(): Promise<void> {
@@ -90,7 +118,7 @@ export default class StockValuationsPlugin extends Plugin {
 	}
 
 	private async persist(): Promise<void> {
-		const data: PluginData = { settings: this.settings, valuations: this.valuations };
+		const data: PluginData = { settings: this.settings, valuations: this.valuations, lastSeenVersion: this.lastSeenVersion };
 		await this.saveData(data);
 	}
 }
