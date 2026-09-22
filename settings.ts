@@ -1,6 +1,14 @@
-import { App, PluginSettingTab, Setting, SettingDefinitionItem, SettingGroupItem } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, SettingDefinitionItem, SettingGroupItem, TFolder } from "obsidian";
 import type StockValuationsPlugin from "./main";
 import { SCALE_LABELS, SCALE_OPTIONS, ScaleUnit } from "./units";
+
+// Vault folder paths never carry a trailing slash — "investing" and
+// "investing/" refer to the same folder, but Vault.getAbstractFileByPath()
+// treats them as different strings, so a trailing slash would otherwise
+// read as "doesn't exist" even when it does.
+function normalizeFolderPath(value: string): string {
+	return value.trim().replace(/\/+$/, "");
+}
 
 type NumberSettingKey = "riskFreeRate" | "marketRiskPremium" | "taxRate" | "maintenanceCapexPct" | "aaaBondYield";
 
@@ -19,6 +27,12 @@ export interface StockValuationsSettings {
 	defaultMoneyScale: ScaleUnit; // default scale for dollar aggregates (debt, FCF, OCF, ...)
 	defaultSharesScale: ScaleUnit; // default scale for share counts
 	valuationsNotePath: string; // vault path to the auto-generated summary note
+
+	// Optional features — off by default, this being the first. Each one is a
+	// self-contained toggle; add more here rather than growing new top-level
+	// settings sections per feature.
+	enableResearchLinks: boolean; // shows a Research link column/cell; the linked note's format is never read or required
+	researchNotesFolder: string; // vault folder new research notes are created in; required (no default) to activate the link above
 }
 
 export const DEFAULT_SETTINGS: StockValuationsSettings = {
@@ -30,7 +44,17 @@ export const DEFAULT_SETTINGS: StockValuationsSettings = {
 	defaultMoneyScale: "millions",
 	defaultSharesScale: "millions",
 	valuationsNotePath: "Stock Valuations/Stock Valuations.md",
+	enableResearchLinks: false,
+	researchNotesFolder: "",
 };
+
+// The research-links feature needs both the toggle on and a folder to create
+// notes in — there's no shipped default folder, so the toggle alone isn't
+// enough. Shared by the table view and the vault summary note so both agree
+// on when the Research column is actually showing.
+export function researchLinksActive(settings: StockValuationsSettings): boolean {
+	return settings.enableResearchLinks && settings.researchNotesFolder.trim().length > 0;
+}
 
 export class StockValuationsSettingTab extends PluginSettingTab {
 	plugin: StockValuationsPlugin;
@@ -106,6 +130,73 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 			"Current AAA corporate bond yield, as a percentage, for the Graham formula.",
 			"aaaBondYield"
 		);
+
+		new Setting(containerEl)
+			.setName("Optional features")
+			.setDesc("Off by default. This is the first entry — a home for future opt-in additions too.")
+			.setHeading();
+
+		new Setting(containerEl)
+			.setName("Link research notes")
+			.setDesc(
+				"Adds a Research link to each saved valuation, pointing at any vault note you choose. Nothing about the note's contents or format is read or required."
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.enableResearchLinks).onChange(async (value) => {
+					this.plugin.settings.enableResearchLinks = value;
+					await this.plugin.saveSettings();
+					this.display();
+				})
+			);
+
+		if (this.plugin.settings.enableResearchLinks) {
+			new Setting(containerEl)
+				.setName("Research notes folder")
+				.setDesc(
+					"Vault folder new research notes are created in. Required to activate the Research column above — left blank, the column stays hidden rather than falling back to a guessed location."
+				)
+				.addText((text) =>
+					text
+						.setPlaceholder("e.g. investing/research")
+						.setValue(this.plugin.settings.researchNotesFolder)
+						.onChange(async (value) => {
+							const trimmed = normalizeFolderPath(value);
+							this.plugin.settings.researchNotesFolder = trimmed;
+							await this.plugin.saveSettings();
+							this.warnAboutResearchFolder(trimmed);
+						})
+				);
+		}
+	}
+
+	// Debounced so this doesn't fire a Notice on every keystroke — both
+	// settings surfaces call onChange/setControlValue per keystroke, and the
+	// check is only meaningful once the user pauses.
+	private researchFolderWarnTimer: number | undefined;
+
+	private warnAboutResearchFolder(path: string): void {
+		if (this.researchFolderWarnTimer !== undefined) {
+			window.clearTimeout(this.researchFolderWarnTimer);
+		}
+		this.researchFolderWarnTimer = window.setTimeout(() => {
+			const warning = this.researchFolderWarning(path);
+			if (warning) new Notice(warning, 8000);
+		}, 600);
+	}
+
+	// Not a hard gate — createAndLinkResearchNote() (view.ts) creates the
+	// folder if it's missing when you actually add a note, same as the vault
+	// summary note path always has. This just flags a likely typo early.
+	private researchFolderWarning(path: string): string | undefined {
+		if (!path) return undefined;
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing && !(existing instanceof TFolder)) {
+			return `"${path}" exists in the vault, but it's a file, not a folder.`;
+		}
+		if (!existing) {
+			return `"${path}" doesn't exist yet — it'll be created automatically the first time you add a note there.`;
+		}
+		return undefined;
 	}
 
 	// ---------------------------------------------------------------------
@@ -179,6 +270,32 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 					),
 				],
 			},
+			{
+				type: "group",
+				heading: "Optional features",
+				items: [
+					{
+						name: "Link research notes",
+						desc: "Adds a Research link to each saved valuation, pointing at any vault note you choose. Nothing about the note's contents or format is read or required.",
+						control: {
+							type: "toggle",
+							key: "enableResearchLinks",
+							defaultValue: DEFAULT_SETTINGS.enableResearchLinks,
+						},
+					},
+					{
+						name: "Research notes folder",
+						desc: "Vault folder new research notes are created in. Required to activate the Research column above — left blank, the column stays hidden rather than falling back to a guessed location.",
+						visible: () => this.plugin.settings.enableResearchLinks,
+						control: {
+							type: "text",
+							key: "researchNotesFolder",
+							placeholder: "e.g. investing/research",
+							defaultValue: DEFAULT_SETTINGS.researchNotesFolder,
+						},
+					},
+				],
+			},
 		];
 	}
 
@@ -194,6 +311,10 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		if (key === "valuationsNotePath") {
 			const trimmed = typeof value === "string" ? value.trim() : "";
 			settings[key] = trimmed || DEFAULT_SETTINGS.valuationsNotePath;
+		} else if (key === "researchNotesFolder") {
+			const trimmed = typeof value === "string" ? normalizeFolderPath(value) : "";
+			settings[key] = trimmed;
+			this.warnAboutResearchFolder(trimmed);
 		} else {
 			settings[key] = value;
 		}

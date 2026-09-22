@@ -2,6 +2,7 @@ import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { StockValuationsView, VIEW_TYPE_STOCK_VALUATIONS } from "./view";
 import {
 	DEFAULT_SETTINGS,
+	researchLinksActive,
 	StockValuationsSettings,
 	StockValuationsSettingTab,
 } from "./settings";
@@ -76,7 +77,12 @@ export default class StockValuationsPlugin extends Plugin {
 	async saveValuations(): Promise<void> {
 		await this.persist();
 		try {
-			await syncValuationsNote(this.app, this.settings.valuationsNotePath, this.valuations);
+			await syncValuationsNote(
+				this.app,
+				this.settings.valuationsNotePath,
+				this.valuations,
+				researchLinksActive(this.settings)
+			);
 		} catch (e) {
 			console.error("Stock Valuations: failed to write summary note", e);
 			new Notice("Saved, but couldn't update the vault summary note — check the note path in settings.");

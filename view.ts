@@ -1,4 +1,16 @@
-import { App, ItemView, Modal, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
+import {
+	App,
+	FuzzySuggestModal,
+	ItemView,
+	Menu,
+	Modal,
+	normalizePath,
+	Notice,
+	TFile,
+	WorkspaceLeaf,
+	setIcon,
+	setTooltip,
+} from "obsidian";
 import { BarController, BarElement, CategoryScale, Chart, LinearScale, Legend, Tooltip } from "chart.js";
 import type StockValuationsPlugin from "./main";
 import {
@@ -17,6 +29,8 @@ import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput }
 import { HELP_TEXT } from "./helpText";
 import { FormState, Results, SavedValuation } from "./valuationStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
+import { researchLinksActive } from "./settings";
+import { ensureFolderExists } from "./noteSync";
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
 
@@ -37,7 +51,9 @@ class ConfirmModal extends Modal {
 	constructor(
 		app: App,
 		private message: string,
-		private onConfirm: () => void
+		private onConfirm: () => void,
+		private confirmLabel: string = "Delete",
+		private confirmCls: string = "mod-warning"
 	) {
 		super(app);
 	}
@@ -47,7 +63,7 @@ class ConfirmModal extends Modal {
 
 		const buttonRow = this.contentEl.createDiv({ cls: "sv-modal-buttons" });
 		buttonRow.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-		const confirmBtn = buttonRow.createEl("button", { text: "Delete", cls: "mod-warning" });
+		const confirmBtn = buttonRow.createEl("button", { text: this.confirmLabel, cls: this.confirmCls });
 		confirmBtn.addEventListener("click", () => {
 			this.close();
 			this.onConfirm();
@@ -56,6 +72,30 @@ class ConfirmModal extends Modal {
 
 	onClose(): void {
 		this.contentEl.empty();
+	}
+}
+
+// Vault-wide file picker for "Choose an existing note…" — deliberately not
+// restricted to markdown, since the plugin never reads the linked file.
+class LinkNoteSuggestModal extends FuzzySuggestModal<TFile> {
+	constructor(
+		app: App,
+		private onChoose: (file: TFile) => void
+	) {
+		super(app);
+		this.setPlaceholder("Choose a note to link…");
+	}
+
+	getItems(): TFile[] {
+		return this.app.vault.getFiles().sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	getItemText(file: TFile): string {
+		return file.path;
+	}
+
+	onChooseItem(file: TFile): void {
+		this.onChoose(file);
 	}
 }
 
@@ -247,6 +287,13 @@ export class StockValuationsView extends ItemView {
 		this.state.ticker = ticker;
 		this.recalculate();
 
+		// A linked research note is set only from the table, never this form —
+		// carry it forward from the record being edited so re-saving the
+		// calculator inputs can't silently drop it.
+		const previousLink = this.originalTicker
+			? this.plugin.valuations[this.originalTicker]?.researchNotePath
+			: undefined;
+
 		const record: SavedValuation = {
 			state: { ...this.state },
 			moneyScale: this.moneyScale,
@@ -254,6 +301,7 @@ export class StockValuationsView extends ItemView {
 			results: { ...this.results },
 			updatedAt: Date.now(),
 		};
+		if (previousLink) record.researchNotePath = previousLink;
 		this.plugin.valuations[ticker] = record;
 		void this.plugin.saveValuations();
 		new Notice(`Saved ${ticker}.`);
@@ -298,10 +346,12 @@ export class StockValuationsView extends ItemView {
 			this.renderPagination(root, tickers.length, pageStart, pageTickers.length, pageCount);
 		}
 
+		const showResearch = this.isResearchLinksEnabled();
+
 		const wrap = root.createDiv({ cls: "sv-table-wrap" });
 		const table = wrap.createEl("table", { cls: "sv-main-table" });
 		const head = table.createEl("tr");
-		[
+		const headers = [
 			"Symbol",
 			"DCF MoS",
 			"DCF IV",
@@ -312,8 +362,13 @@ export class StockValuationsView extends ItemView {
 			"Graham IV",
 			"Price",
 			"Updated",
-			"",
-		].forEach((h) => head.createEl("th", { text: h }));
+		];
+		if (showResearch) headers.push("Research");
+		headers.push("");
+		headers.forEach((h) => {
+			const th = head.createEl("th", { text: h });
+			if (h === "Research") th.addClass("sv-left-header");
+		});
 
 		for (const ticker of pageTickers) {
 			const saved = this.plugin.valuations[ticker];
@@ -336,6 +391,10 @@ export class StockValuationsView extends ItemView {
 				text: window.moment(saved.updatedAt).format("YYYY-MM-DD"),
 				cls: "sv-num sv-updated-cell",
 			});
+
+			if (showResearch) {
+				this.renderResearchCell(tr, ticker, saved);
+			}
 
 			const actionsCell = tr.createEl("td", { cls: "sv-actions-cell" });
 			const editBtn = actionsCell.createEl("button", { cls: "sv-icon-btn" });
@@ -612,6 +671,125 @@ export class StockValuationsView extends ItemView {
 	private destroyChart(): void {
 		for (const chart of this.charts) chart.destroy();
 		this.charts = [];
+	}
+
+	// ---------------------------------------------------------------------
+	// Research links — an optional, opt-in column. The linked file's
+	// contents are never read; the plugin only stores and opens a path.
+	// ---------------------------------------------------------------------
+
+	private isResearchLinksEnabled(): boolean {
+		return researchLinksActive(this.plugin.settings);
+	}
+
+	private renderResearchCell(row: HTMLElement, ticker: string, saved: SavedValuation): void {
+		const cell = row.createEl("td", { cls: "sv-research-cell" });
+		const path = saved.researchNotePath;
+		const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+
+		if (path && file instanceof TFile) {
+			const wrap = cell.createSpan({ cls: "sv-research-linked" });
+
+			const openBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
+			setIcon(openBtn, "file-text");
+			setTooltip(openBtn, `Open ${file.basename}`);
+			openBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				void this.app.workspace.getLeaf(true).openFile(file);
+			});
+
+			const unlinkBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
+			setIcon(unlinkBtn, "unlink");
+			setTooltip(unlinkBtn, "Remove link (the note itself is untouched)");
+			unlinkBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				new ConfirmModal(
+					this.app,
+					`Remove the research link for ${ticker}? "${file.basename}" itself won't be touched.`,
+					() => {
+						delete saved.researchNotePath;
+						void this.plugin.saveValuations();
+						this.render();
+					},
+					"Remove link"
+				).open();
+			});
+			return;
+		}
+
+		const linkBtn = cell.createEl("button", { cls: "sv-research-empty" });
+		setIcon(linkBtn.createSpan(), "link");
+		linkBtn.createSpan({ text: "Link note" });
+		setTooltip(
+			linkBtn,
+			path ? `Linked file "${path}" not found — click to relink` : "Link an existing note, or create a new one"
+		);
+		linkBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.openLinkNoteMenu(e, ticker);
+		});
+	}
+
+	private openLinkNoteMenu(evt: MouseEvent, ticker: string): void {
+		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle("Choose an existing note…")
+				.setIcon("search")
+				.onClick(() => {
+					new LinkNoteSuggestModal(this.app, (file) => this.setResearchLink(ticker, file.path)).open();
+				})
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle("Create a new note here…")
+				.setIcon("plus")
+				.onClick(() => {
+					const folder = this.plugin.settings.researchNotesFolder;
+					const filename = `${ticker}-research`;
+					const path = normalizePath(folder ? `${folder}/${filename}.md` : `${filename}.md`);
+					if (this.app.vault.getAbstractFileByPath(path)) {
+						new Notice(`"${path}" already exists — use "Choose an existing note…" to link it instead.`);
+						return;
+					}
+					new ConfirmModal(
+						this.app,
+						`Create "${path}"?`,
+						() => void this.createAndLinkResearchNote(ticker, folder, filename),
+						"Create",
+						"mod-cta"
+					).open();
+				})
+		);
+		menu.showAtMouseEvent(evt);
+	}
+
+	private setResearchLink(ticker: string, path: string): void {
+		const saved = this.plugin.valuations[ticker];
+		if (!saved) return;
+		saved.researchNotePath = path;
+		void this.plugin.saveValuations();
+		this.render();
+	}
+
+	private async createAndLinkResearchNote(ticker: string, folder: string, filename: string): Promise<void> {
+		const withExt = filename.toLowerCase().endsWith(".md") ? filename : `${filename}.md`;
+		const path = normalizePath(folder ? `${folder}/${withExt}` : withExt);
+
+		try {
+			if (this.app.vault.getAbstractFileByPath(path)) {
+				new Notice(`"${path}" already exists — use "Choose an existing note…" to link it instead.`);
+				return;
+			}
+			await ensureFolderExists(this.app, path);
+			await this.app.vault.create(path, "");
+			this.setResearchLink(ticker, path);
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile) void this.app.workspace.getLeaf(true).openFile(file);
+		} catch (e) {
+			console.error("Stock Valuations: failed to create research note", e);
+			new Notice(`Couldn't create "${path}" — check the folder and filename and try again.`);
+		}
 	}
 
 	private mosCell(row: HTMLElement, mos: number): void {

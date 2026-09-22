@@ -4,8 +4,13 @@ import { formatCurrency, formatPercent } from "./format";
 
 // Regenerates the whole note from scratch on every call — this is the vault-
 // visible mirror of the plugin's own data, not something meant to be hand-edited.
-export async function syncValuationsNote(app: App, path: string, valuations: ValuationTable): Promise<void> {
-	const content = buildNoteContent(valuations);
+export async function syncValuationsNote(
+	app: App,
+	path: string,
+	valuations: ValuationTable,
+	includeResearchColumn: boolean
+): Promise<void> {
+	const content = buildNoteContent(valuations, includeResearchColumn);
 	const existing = app.vault.getAbstractFileByPath(path);
 	if (existing instanceof TFile) {
 		await app.vault.modify(existing, content);
@@ -15,7 +20,9 @@ export async function syncValuationsNote(app: App, path: string, valuations: Val
 	await app.vault.create(path, content);
 }
 
-async function ensureFolderExists(app: App, filePath: string): Promise<void> {
+// Shared with view.ts's "create a new research note" flow, so both places
+// that create vault files use the same parent-folder handling.
+export async function ensureFolderExists(app: App, filePath: string): Promise<void> {
 	const folderPath = filePath.split("/").slice(0, -1).join("/");
 	if (!folderPath) return;
 	if (app.vault.getAbstractFileByPath(folderPath)) return;
@@ -24,7 +31,7 @@ async function ensureFolderExists(app: App, filePath: string): Promise<void> {
 	});
 }
 
-function buildNoteContent(valuations: ValuationTable): string {
+function buildNoteContent(valuations: ValuationTable, includeResearchColumn: boolean): string {
 	const tickers = Object.keys(valuations).sort();
 
 	const lines = [
@@ -39,25 +46,47 @@ function buildNoteContent(valuations: ValuationTable): string {
 		return lines.join("\n") + "\n";
 	}
 
-	lines.push(
-		"| Symbol | DCF MoS | DCF IV | Ten Cap MoS | Ten Cap IV | Ten Cap Yield | Graham MoS | Graham IV | Price | Updated |",
-		"|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"
-	);
+	if (includeResearchColumn) {
+		lines.push(
+			"| Symbol | DCF MoS | DCF IV | Ten Cap MoS | Ten Cap IV | Ten Cap Yield | Graham MoS | Graham IV | Price | Updated | Research |",
+			"|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"
+		);
+	} else {
+		lines.push(
+			"| Symbol | DCF MoS | DCF IV | Ten Cap MoS | Ten Cap IV | Ten Cap Yield | Graham MoS | Graham IV | Price | Updated |",
+			"|---|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+		);
+	}
 
 	for (const ticker of tickers) {
 		const v = valuations[ticker];
 		const r = v.results;
 		const price = parseFloat(v.state.price) || 0;
-		lines.push(
+		let row =
 			`| ${ticker} | ${formatPercent(r.dcfMos)} | ${formatCurrency(r.dcfIv)} | ${formatPercent(
 				r.tenCapMos
 			)} | ${formatCurrency(r.tenCapIv)} | ${formatPercent(r.tenCapYield)} | ${formatPercent(
 				r.grahamMos
 			)} | ${formatCurrency(r.grahamIv)} | ${formatCurrency(price)} | ${window.moment(v.updatedAt).format(
 				"YYYY-MM-DD"
-			)} |`
-		);
+			)} |`;
+		if (includeResearchColumn) {
+			row += ` ${researchLinkCell(v.researchNotePath)} |`;
+		}
+		lines.push(row);
 	}
 
 	return lines.join("\n") + "\n";
+}
+
+// A bare wikilink built from the stored path — no reliance on ticker naming,
+// so it works regardless of what the note is called or where it lives.
+// Nothing about the note's contents is read here. The alias pipe is escaped
+// as \| (not just any pipe already in the path) because this cell lives
+// inside a markdown table row — an unescaped "|" reads as a new column and
+// truncates the link right before "Research]]".
+function researchLinkCell(path: string | undefined): string {
+	if (!path) return "—";
+	const target = path.replace(/\.md$/i, "").replace(/\|/g, "\\|");
+	return `[[${target}\\|Research]]`;
 }

@@ -47,6 +47,12 @@ export interface SavedValuation {
 	sharesScale: ScaleUnit;
 	results: Results;
 	updatedAt: number; // epoch ms
+
+	// Vault path to a linked research note, set only through the table's
+	// Research column (never the form) — independent of ticker naming, and
+	// nothing about the note's contents or format is read or assumed.
+	// Preserved across form saves; removed only by explicitly unlinking it.
+	researchNotePath?: string;
 }
 
 // Keyed by uppercase ticker.
