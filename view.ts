@@ -12,6 +12,8 @@ import {
 	setTooltip,
 } from "obsidian";
 import { BarController, BarElement, CategoryScale, Chart, LinearScale, Legend, Tooltip } from "chart.js";
+import { FormatModule, InteractionModule, PageModule, SortModule, Tabulator } from "tabulator-tables";
+import type { CellComponent, ColumnDefinition } from "tabulator-tables";
 import type StockValuationsPlugin from "./main";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
@@ -20,13 +22,17 @@ import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundament
 import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
-import { FormState, Results, SavedValuation } from "./valuationStore";
+import { FormState, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
 import { ensureFolderExists } from "./noteSync";
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
+// Core Tabulator + only the modules the table actually uses (cell formatters,
+// column sorting, pagination, row click) — not TabulatorFull, which bundles
+// every module (filtering, editing, export, print, etc.) and is ~2.5x the size.
+Tabulator.registerModule([FormatModule, SortModule, PageModule, InteractionModule]);
 
 export const VIEW_TYPE_STOCK_VALUATIONS = "stock-valuations-view";
 
@@ -38,6 +44,100 @@ const METHODS = [
 	{ label: "Ten Cap", color: "#8d6fd1", mosKey: "tenCapMos", ivKey: "tenCapIv" },
 ] as const satisfies { label: string; color: string; mosKey: keyof Results; ivKey: keyof Results }[];
 const AVERAGE_COLOR = "#94a3b8";
+
+// Display order for the scenario tabs/selector — optimistic to pessimistic,
+// left to right.
+const SCENARIO_KEYS: ScenarioKey[] = ["bull", "base", "bear"];
+const SCENARIO_LABELS: Record<ScenarioKey, string> = { bull: "Bull", base: "Base", bear: "Bear" };
+const SCENARIO_TOOLTIPS: Record<ScenarioKey, string> = {
+	bull: "Optimistic assumptions.",
+	base: "Most-likely assumptions.",
+	bear: "Pessimistic assumptions.",
+};
+
+function cloneScenario(s: Scenario): Scenario {
+	return { state: { ...s.state }, results: { ...s.results } };
+}
+
+// The only fields that actually differ between bull/base/bear — everything
+// else (ticker/price/shares, WACC inputs, debt, trailing EPS/OCF/capex/FCF,
+// bond yield) is a company or market fact, not a scenario assumption. Those
+// facts are edited only on the Base tab and shown read-only, inherited live
+// from Base, on Bull/Bear — see field()'s readOnly handling and
+// setStateField() below.
+const SCENARIO_SPECIFIC_FIELDS: ReadonlySet<keyof FormState> = new Set([
+	"growth1to5",
+	"growth6to10",
+	"terminalGrowth",
+	"grahamGrowth",
+]);
+
+// One flat row per ticker for the Tabulator table — every IV/MoS value for
+// every scenario, precomputed, since Tabulator's column/formatter model
+// works off plain fields rather than the nested scenarios/results shape.
+interface TableRow {
+	ticker: string;
+	dcfBearIv: number;
+	dcfBearMos: number;
+	dcfBaseIv: number;
+	dcfBaseMos: number;
+	dcfBullIv: number;
+	dcfBullMos: number;
+	tenCapIv: number;
+	tenCapMos: number;
+	tenCapYield: number;
+	grahamBearIv: number;
+	grahamBearMos: number;
+	grahamBaseIv: number;
+	grahamBaseMos: number;
+	grahamBullIv: number;
+	grahamBullMos: number;
+	price: number;
+	updatedAt: number;
+	researchNotePath?: string;
+}
+
+function buildTableRow(ticker: string, saved: SavedValuation): TableRow {
+	const { base, bear, bull } = saved.scenarios;
+	return {
+		ticker,
+		dcfBearIv: bear.results.dcfIv,
+		dcfBearMos: bear.results.dcfMos,
+		dcfBaseIv: base.results.dcfIv,
+		dcfBaseMos: base.results.dcfMos,
+		dcfBullIv: bull.results.dcfIv,
+		dcfBullMos: bull.results.dcfMos,
+		// Ten Cap has no scenario-specific input (see SCENARIO_SPECIFIC_FIELDS
+		// above), so bear/base/bull are always identical — one value suffices.
+		tenCapIv: base.results.tenCapIv,
+		tenCapMos: base.results.tenCapMos,
+		tenCapYield: base.results.tenCapYield,
+		grahamBearIv: bear.results.grahamIv,
+		grahamBearMos: bear.results.grahamMos,
+		grahamBaseIv: base.results.grahamIv,
+		grahamBaseMos: base.results.grahamMos,
+		grahamBullIv: bull.results.grahamIv,
+		grahamBullMos: bull.results.grahamMos,
+		price: parseFloat(base.state.price) || 0,
+		updatedAt: saved.updatedAt,
+		researchNotePath: saved.researchNotePath,
+	};
+}
+
+// Packs IV and MoS into one cell ("$164/-33%") instead of splitting them
+// across two columns. `field` on the column holds the MoS value (so sorting
+// the column sorts by margin of safety, the more decision-relevant number);
+// `ivField` names the sibling field this formatter pulls the IV from.
+function ivMosFormatter(ivField: keyof TableRow): (cell: CellComponent) => string {
+	return (cell) => {
+		const mos = cell.getValue() as number;
+		const iv = (cell.getData() as TableRow)[ivField] as number;
+		const el = cell.getElement();
+		el.classList.remove("sv-mos-pos", "sv-mos-neg");
+		if (isFinite(mos)) el.classList.add(mos >= 0 ? "sv-mos-pos" : "sv-mos-neg");
+		return `${formatCurrency(iv, 0)}/${formatPercent(mos, 0)}`;
+	};
+}
 
 type Screen = "table" | "form" | "docs" | "changelog";
 
@@ -98,6 +198,13 @@ export class StockValuationsView extends ItemView {
 	private screen: Screen = "table";
 	private changelogVersion: string | null = null;
 
+	// All three scenarios for the ticker currently open in the form. `state`/
+	// `results` below always alias whichever scenario is active — the same
+	// object references, not copies — so the existing field bindings that
+	// read/write `this.state`/`this.results` keep working unmodified; only
+	// which scenario they point at changes on a tab switch.
+	private scenarios!: Record<ScenarioKey, Scenario>;
+	private activeScenario: ScenarioKey = "base";
 	private state!: FormState;
 	// The ticker this form session started as (null for a brand-new valuation) —
 	// used to tell "editing this same ticker" apart from "typed a ticker that
@@ -113,7 +220,7 @@ export class StockValuationsView extends ItemView {
 	private heroPriceEl!: HTMLElement;
 	private mktCapInput!: HTMLInputElement;
 	private charts: Chart[] = [];
-	private tablePage = 0;
+	private tabulator: Tabulator | null = null;
 	private static readonly PAGE_SIZE = 10;
 
 	constructor(leaf: WorkspaceLeaf, plugin: StockValuationsPlugin) {
@@ -140,6 +247,7 @@ export class StockValuationsView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.destroyChart();
+		this.destroyTabulator();
 		this.contentEl.empty();
 	}
 
@@ -149,6 +257,7 @@ export class StockValuationsView extends ItemView {
 
 	private render(): void {
 		this.destroyChart();
+		this.destroyTabulator();
 		const root = this.contentEl;
 		root.empty();
 		root.addClass("stock-valuations-view");
@@ -169,7 +278,9 @@ export class StockValuationsView extends ItemView {
 		this.originalTicker = null;
 		this.moneyScale = s.defaultMoneyScale;
 		this.sharesScale = s.defaultSharesScale;
-		this.state = {
+		this.activeScenario = "base";
+
+		const blankState = (): FormState => ({
 			ticker: "",
 			price: "",
 			shares: "",
@@ -199,17 +310,81 @@ export class StockValuationsView extends ItemView {
 			ocf: "",
 			capex: "",
 			mainPct: String(s.maintenanceCapexPct),
-		};
+		});
+
+		this.scenarios = {} as Record<ScenarioKey, Scenario>;
+		for (const key of SCENARIO_KEYS) {
+			const state = blankState();
+			this.scenarios[key] = {
+				state,
+				results: computeResultsForState(state, this.moneyScale, this.sharesScale, s.taxRate),
+			};
+		}
+		this.state = this.scenarios.base.state;
+		this.results = this.scenarios.base.results;
 	}
 
 	private loadIntoForm(ticker: string): void {
 		const saved = this.plugin.valuations[ticker];
 		if (!saved) return;
 		this.originalTicker = ticker;
-		this.state = { ...saved.state };
 		this.moneyScale = saved.moneyScale;
 		this.sharesScale = saved.sharesScale;
-		this.results = { ...saved.results };
+		this.activeScenario = "base";
+
+		this.scenarios = {} as Record<ScenarioKey, Scenario>;
+		for (const key of SCENARIO_KEYS) {
+			this.scenarios[key] = cloneScenario(saved.scenarios[key]);
+		}
+
+		// Base is the source of truth for every shared fact. Force Bull/Bear's
+		// copies to match it and recompute their results — a saved record from
+		// before facts were shared (or edited under an older build) could still
+		// have its own divergent values, and "inherited from Base" needs to be
+		// true the moment the form opens, not just prospectively from here on.
+		const factKeys = (Object.keys(this.scenarios.base.state) as (keyof FormState)[]).filter(
+			(k) => !SCENARIO_SPECIFIC_FIELDS.has(k)
+		);
+		for (const key of SCENARIO_KEYS) {
+			if (key === "base") continue;
+			for (const field of factKeys) {
+				this.scenarios[key].state[field] = this.scenarios.base.state[field];
+			}
+			this.scenarios[key].results = computeResultsForState(
+				this.scenarios[key].state,
+				this.moneyScale,
+				this.sharesScale,
+				this.plugin.settings.taxRate
+			);
+		}
+
+		this.state = this.scenarios[this.activeScenario].state;
+		this.results = this.scenarios[this.activeScenario].results;
+	}
+
+	// Switches which scenario's fields the form shows/edits. Doesn't touch the
+	// other two scenarios' data — each keeps whatever was last typed into it
+	// until Save, which persists all three together.
+	private switchScenario(key: ScenarioKey): void {
+		if (key === this.activeScenario) return;
+		this.activeScenario = key;
+		this.state = this.scenarios[key].state;
+		this.results = this.scenarios[key].results;
+		this.render();
+	}
+
+	// Writes a value into the active scenario's state — and, for every field
+	// that isn't one of the scenario-specific growth assumptions (see
+	// SCENARIO_SPECIFIC_FIELDS), into the other two scenarios as well, since
+	// those are shared facts. The one place that should ever assign into
+	// this.state[key].
+	private setStateField(key: keyof FormState, value: string): void {
+		this.state[key] = value;
+		if (!SCENARIO_SPECIFIC_FIELDS.has(key)) {
+			for (const otherKey of SCENARIO_KEYS) {
+				if (otherKey !== this.activeScenario) this.scenarios[otherKey].state[key] = value;
+			}
+		}
 	}
 
 	private newValuation(): void {
@@ -279,11 +454,29 @@ export class StockValuationsView extends ItemView {
 			? this.plugin.valuations[this.originalTicker]?.researchNotePath
 			: undefined;
 
+		// The record is keyed by one ticker — every scenario must agree on it,
+		// even though only one tab is on screen when Save is clicked. Results
+		// for the other two scenarios are recomputed too: a scale switch or a
+		// shared-field edit (ticker/price/shares) updates their state without
+		// ever visiting their tab, which would otherwise leave stale results.
+		for (const key of SCENARIO_KEYS) {
+			this.scenarios[key].state.ticker = ticker;
+			this.scenarios[key].results = computeResultsForState(
+				this.scenarios[key].state,
+				this.moneyScale,
+				this.sharesScale,
+				this.plugin.settings.taxRate
+			);
+		}
+
 		const record: SavedValuation = {
-			state: { ...this.state },
+			scenarios: {
+				bull: cloneScenario(this.scenarios.bull),
+				base: cloneScenario(this.scenarios.base),
+				bear: cloneScenario(this.scenarios.bear),
+			},
 			moneyScale: this.moneyScale,
 			sharesScale: this.sharesScale,
-			results: { ...this.results },
 			updatedAt: Date.now(),
 		};
 		if (previousLink) record.researchNotePath = previousLink;
@@ -310,7 +503,7 @@ export class StockValuationsView extends ItemView {
 		setTooltip(docsBtn, "Help & methodology");
 		docsBtn.addEventListener("click", () => this.openDocs());
 
-		const tickers = Object.keys(this.plugin.valuations).sort();
+		const tickers = Object.keys(this.plugin.valuations);
 
 		const refreshBtn = headerActions.createEl("button", { cls: "sv-docs-btn mod-cta" });
 		const refreshIcon = refreshBtn.createSpan({ cls: "sv-docs-btn-icon" });
@@ -336,133 +529,244 @@ export class StockValuationsView extends ItemView {
 			return;
 		}
 
-		const pageCount = Math.max(1, Math.ceil(tickers.length / StockValuationsView.PAGE_SIZE));
-		this.tablePage = Math.min(this.tablePage, pageCount - 1);
-		const pageStart = this.tablePage * StockValuationsView.PAGE_SIZE;
-		const pageTickers = tickers.slice(pageStart, pageStart + StockValuationsView.PAGE_SIZE);
-
-		if (pageCount > 1) {
-			this.renderPagination(root, tickers.length, pageStart, pageTickers.length, pageCount);
-		}
-
 		const showResearch = this.isResearchLinksEnabled();
+		const rows: TableRow[] = tickers.map((t) => buildTableRow(t, this.plugin.valuations[t]));
 
 		const wrap = root.createDiv({ cls: "sv-table-wrap" });
-		const table = wrap.createEl("table", { cls: "sv-main-table" });
-		const head = table.createEl("tr");
-		const headers = [
-			"Symbol",
-			"DCF MoS",
-			"DCF IV",
-			"Ten Cap MoS",
-			"Ten Cap IV",
-			"Ten Cap Yield",
-			"Graham MoS",
-			"Graham IV",
-			"Price",
-			"Updated",
+		const tableEl = wrap.createDiv();
+		const chartsWrap = root.createDiv();
+
+		// Ten Cap has no scenario lever (shared facts only — see
+		// SCENARIO_SPECIFIC_FIELDS), so it's a single merged IV/MoS column. DCF
+		// and Graham each get a "IV / MoS" group with Bear/Base/Bull
+		// sub-columns — explicit labels, IV and MoS packed into the same cell
+		// (ivMosFormatter) rather than IV living in its own column.
+		const columns: ColumnDefinition[] = [
+			{ title: "Symbol", field: "ticker", cssClass: "sv-symbol-cell", hozAlign: "left", headerHozAlign: "left" },
+			{
+				title: "DCF IV / MoS",
+				headerHozAlign: "center",
+				columns: [
+					{
+						title: "Bear",
+						field: "dcfBearMos",
+						formatter: ivMosFormatter("dcfBearIv"),
+						cssClass: "sv-num sv-scenario-col sv-subheader",
+					},
+					{
+						title: "Base",
+						field: "dcfBaseMos",
+						formatter: ivMosFormatter("dcfBaseIv"),
+						cssClass: "sv-num sv-scenario-col sv-subheader",
+					},
+					{
+						title: "Bull",
+						field: "dcfBullMos",
+						formatter: ivMosFormatter("dcfBullIv"),
+						cssClass: "sv-num sv-scenario-col sv-subheader",
+					},
+				],
+			},
+			{
+				title: "Ten Cap IV / MoS",
+				field: "tenCapMos",
+				formatter: ivMosFormatter("tenCapIv"),
+				cssClass: "sv-num sv-scenario-col",
+			},
+			{
+				title: "Ten Cap Yield",
+				field: "tenCapYield",
+				formatter: (cell) => formatPercent(cell.getValue() as number, 1),
+				cssClass: "sv-num",
+			},
+			{
+				title: "Graham IV / MoS",
+				headerHozAlign: "center",
+				columns: [
+					{
+						title: "Bear",
+						field: "grahamBearMos",
+						formatter: ivMosFormatter("grahamBearIv"),
+						cssClass: "sv-num sv-scenario-col sv-subheader",
+					},
+					{
+						title: "Base",
+						field: "grahamBaseMos",
+						formatter: ivMosFormatter("grahamBaseIv"),
+						cssClass: "sv-num sv-scenario-col sv-subheader",
+					},
+					{
+						title: "Bull",
+						field: "grahamBullMos",
+						formatter: ivMosFormatter("grahamBullIv"),
+						cssClass: "sv-num sv-scenario-col sv-subheader",
+					},
+				],
+			},
+			{
+				title: "Price",
+				field: "price",
+				formatter: (cell) => formatCurrency(cell.getValue() as number),
+				cssClass: "sv-num",
+			},
+			{
+				title: "Updated",
+				field: "updatedAt",
+				sorter: "number",
+				formatter: (cell) => window.moment(cell.getValue() as number).format("YYYY-MM-DD"),
+				cssClass: "sv-num sv-updated-cell",
+			},
 		];
-		if (showResearch) headers.push("Research");
-		headers.push("");
-		headers.forEach((h) => {
-			const th = head.createEl("th", { text: h });
-			if (h === "Research") th.addClass("sv-left-header");
-		});
-
-		for (const ticker of pageTickers) {
-			const saved = this.plugin.valuations[ticker];
-			const r = saved.results;
-			const price = parseFloat(saved.state.price) || 0;
-
-			const tr = table.createEl("tr", { cls: "sv-table-row" });
-			tr.addEventListener("click", () => this.editValuation(ticker));
-
-			tr.createEl("td", { text: ticker, cls: "sv-symbol-cell" });
-			this.mosCell(tr, r.dcfMos);
-			tr.createEl("td", { text: formatCurrency(r.dcfIv), cls: "sv-num" });
-			this.mosCell(tr, r.tenCapMos);
-			tr.createEl("td", { text: formatCurrency(r.tenCapIv), cls: "sv-num" });
-			tr.createEl("td", { text: formatPercent(r.tenCapYield), cls: "sv-num" });
-			this.mosCell(tr, r.grahamMos);
-			tr.createEl("td", { text: formatCurrency(r.grahamIv), cls: "sv-num" });
-			tr.createEl("td", { text: formatCurrency(price), cls: "sv-num" });
-			tr.createEl("td", {
-				text: window.moment(saved.updatedAt).format("YYYY-MM-DD"),
-				cls: "sv-num sv-updated-cell",
-			});
-
-			if (showResearch) {
-				this.renderResearchCell(tr, ticker, saved);
-			}
-
-			const actionsCell = tr.createEl("td", { cls: "sv-actions-cell" });
-			const editBtn = actionsCell.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(editBtn.createSpan(), "pencil");
-			setTooltip(editBtn, "Edit");
-			editBtn.addEventListener("click", (e) => {
-				e.stopPropagation();
-				this.editValuation(ticker);
-			});
-
-			const deleteBtn = actionsCell.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(deleteBtn.createSpan(), "trash-2");
-			setTooltip(deleteBtn, "Delete");
-			deleteBtn.addEventListener("click", (e) => {
-				e.stopPropagation();
-				this.deleteValuation(ticker);
+		if (showResearch) {
+			columns.push({
+				title: "Research",
+				field: "researchNotePath",
+				hozAlign: "left",
+				headerHozAlign: "left",
+				headerSort: false,
+				formatter: this.researchFormatter,
 			});
 		}
+		columns.push({
+			title: "",
+			field: "ticker",
+			headerSort: false,
+			hozAlign: "right",
+			formatter: this.actionsFormatter,
+		});
 
-		this.renderMosChart(root, pageTickers);
+		// Charts stay scoped to whatever page is currently visible, same as
+		// before Tabulator — re-render them on every page/sort change rather
+		// than once up front.
+		const renderChartsForCurrentPage = () => {
+			this.destroyChart();
+			chartsWrap.empty();
+			const activeTickers = (this.tabulator?.getData("visible") ?? []).map((r) => (r as TableRow).ticker);
+			this.renderMosChart(chartsWrap, activeTickers);
+			this.renderYieldSpreadChart(chartsWrap, activeTickers);
+		};
 
-		if (pageCount > 1) {
-			this.renderPagination(root, tickers.length, pageStart, pageTickers.length, pageCount);
+		this.tabulator = new Tabulator(tableEl, {
+			data: rows,
+			columns,
+			layout: "fitDataStretch",
+			columnDefaults: { hozAlign: "right", headerSort: true, resizable: false },
+			initialSort: [{ column: "ticker", dir: "asc" }],
+			pagination: true,
+			paginationSize: StockValuationsView.PAGE_SIZE,
+			paginationCounter: "rows",
+		});
+		this.tabulator.on("rowClick", (_e, row) => {
+			this.editValuation((row.getData() as TableRow).ticker);
+		});
+		// dataSorted/pageLoaded fire mid-pipeline (sort resolves before the
+		// page stage re-slices and the DOM re-renders), so getData("visible")
+		// there can still reflect the previous page. renderComplete fires
+		// once the whole sort+page pipeline has settled and the DOM matches.
+		this.tabulator.on("tableBuilt", renderChartsForCurrentPage);
+		this.tabulator.on("renderComplete", renderChartsForCurrentPage);
+	}
+
+	// Builds either the "linked" state (open/unlink buttons) or the "link a
+	// note" button — same as the old renderResearchCell, adapted to return a
+	// node for Tabulator to insert rather than building into a <td> directly.
+	private researchFormatter = (cell: CellComponent): HTMLElement | string => {
+		const ticker = (cell.getData() as TableRow).ticker;
+		const saved = this.plugin.valuations[ticker];
+		if (!saved) return "";
+		const path = saved.researchNotePath;
+		const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+
+		if (path && file instanceof TFile) {
+			const wrap = document.createElement("span");
+			wrap.addClass("sv-research-linked");
+
+			const openBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
+			setIcon(openBtn.createSpan(), "file-text");
+			setTooltip(openBtn, `Open ${file.basename}`);
+			openBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				void this.app.workspace.getLeaf(true).openFile(file);
+			});
+
+			const unlinkBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
+			setIcon(unlinkBtn.createSpan(), "unlink");
+			setTooltip(unlinkBtn, "Remove link (the note itself is untouched)");
+			unlinkBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				new ConfirmModal(
+					this.app,
+					`Remove the research link for ${ticker}? "${file.basename}" itself won't be touched.`,
+					() => {
+						delete saved.researchNotePath;
+						void this.plugin.saveValuations();
+						this.render();
+					},
+					"Remove link"
+				).open();
+			});
+			return wrap;
 		}
 
-		this.renderYieldSpreadChart(root, pageTickers);
-	}
+		const linkBtn = document.createElement("button");
+		linkBtn.addClass("sv-research-empty");
+		setIcon(linkBtn.createSpan(), "link");
+		linkBtn.createSpan({ text: "Link note" });
+		setTooltip(
+			linkBtn,
+			path ? `Linked file "${path}" not found — click to relink` : "Link an existing note, or create a new one"
+		);
+		linkBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.openLinkNoteMenu(e, ticker);
+		});
+		return linkBtn;
+	};
 
-	// Prev/next controls for the ticker table and its charts — both are keyed
-	// off the same alphabetically-sorted, paged slice of tickers.
-	private renderPagination(
-		root: HTMLElement,
-		total: number,
-		pageStart: number,
-		pageLength: number,
-		pageCount: number
-	): void {
-		const bar = root.createDiv({ cls: "sv-pagination" });
+	// Edit/delete icon buttons — same as the old actions <td>, wrapped in a
+	// span (sv-actions-cell already lays out as a right-justified flex row)
+	// so it works as a single returned node for Tabulator's formatter.
+	private actionsFormatter = (cell: CellComponent): HTMLElement => {
+		const ticker = (cell.getData() as TableRow).ticker;
+		const wrap = document.createElement("span");
+		wrap.addClass("sv-actions-cell");
 
-		const prevBtn = bar.createEl("button", { text: "← Prev", cls: "sv-link-btn" });
-		prevBtn.disabled = this.tablePage === 0;
-		prevBtn.addEventListener("click", () => {
-			this.tablePage--;
-			this.render();
+		const editBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
+		setIcon(editBtn.createSpan(), "pencil");
+		setTooltip(editBtn, "Edit");
+		editBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.editValuation(ticker);
 		});
 
-		bar.createSpan({
-			cls: "sv-pagination-label",
-			text: `${pageStart + 1}–${pageStart + pageLength} of ${total} (page ${this.tablePage + 1} of ${pageCount})`,
+		const deleteBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
+		setIcon(deleteBtn.createSpan(), "trash-2");
+		setTooltip(deleteBtn, "Delete");
+		deleteBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.deleteValuation(ticker);
 		});
 
-		const nextBtn = bar.createEl("button", { text: "Next →", cls: "sv-link-btn" });
-		nextBtn.disabled = this.tablePage >= pageCount - 1;
-		nextBtn.addEventListener("click", () => {
-			this.tablePage++;
-			this.render();
-		});
-	}
+		return wrap;
+	};
 
 	// ---------------------------------------------------------------------
 	// Standalone section below the table: one horizontal bar group per
-	// ticker, one bar per method (DCF/Graham/Ten Cap MoS%) plus a fourth bar
-	// for the ticker's average MoS across the three. Hovering a bar also
-	// shows that method's intrinsic value alongside its MoS%.
+	// ticker, one plain bar per method (DCF/Graham/Ten Cap MoS%) anchored at
+	// 0 through Base, plus a fourth bar for the ticker's average MoS across
+	// the three. A thin whisker (min/max line with end caps) overlays the bar
+	// showing the Bear-to-Bull spread when the scenarios disagree; when they
+	// agree there's nothing to span, so the whisker just doesn't draw — the
+	// bar itself is unaffected either way, unlike the old floating-range
+	// design where "no spread" meant the bar itself vanished.
 	// ---------------------------------------------------------------------
-
 	private renderMosChart(root: HTMLElement, tickers: string[]): void {
 		const section = root.createDiv({ cls: "sv-chart-section" });
 		section.createEl("h3", { text: "Margin of safety by method" });
+		section.createEl("p", {
+			cls: "sv-chart-caption",
+			text: "Bars show Base margin of safety by method. A thin whisker marks the Bear-to-Bull spread where the calculator's scenarios diverge; no whisker means that ticker's Bull/Bear tabs still match Base. Hover any bar for exact numbers and intrinsic value.",
+		});
 
 		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap" });
 		wrap.style.height = `${Math.max(220, tickers.length * 56 + 60)}px`;
@@ -476,11 +780,12 @@ export class StockValuationsView extends ItemView {
 		// true, uncapped value.
 		const MOS_FLOOR = -100;
 		const clampMos = (v: number) => Math.max(v, MOS_FLOOR);
+		const avg = (vals: number[]) => vals.reduce((a, b) => a + b, 0) / vals.length;
 
 		const datasets = METHODS.map((m) => ({
 			label: m.label,
-			data: tickers.map((t) => {
-				const v = this.plugin.valuations[t].results[m.mosKey];
+			data: tickers.map((t): number | null => {
+				const v = this.plugin.valuations[t].scenarios.base.results[m.mosKey];
 				return isFinite(v) ? clampMos(v) : null;
 			}),
 			backgroundColor: m.color,
@@ -490,28 +795,95 @@ export class StockValuationsView extends ItemView {
 
 		const averageBar = {
 			label: "Average",
-			data: tickers.map((t) => {
-				const r = this.plugin.valuations[t].results;
-				const vals = METHODS.map((m) => r[m.mosKey]).filter((v) => isFinite(v));
-				if (vals.length === 0) return null;
-				return clampMos(vals.reduce((a, b) => a + b, 0) / vals.length);
+			data: tickers.map((t): number | null => {
+				const vals = METHODS.map((m) => this.plugin.valuations[t].scenarios.base.results[m.mosKey]).filter(
+					(v) => isFinite(v)
+				);
+				return vals.length ? clampMos(avg(vals)) : null;
 			}),
 			backgroundColor: AVERAGE_COLOR,
 			borderRadius: 3,
 			categoryPercentage: 0.65,
 		};
 
+		const allDatasets = [...datasets, averageBar];
+
+		// Bear-to-Bull spread per bar, parallel to allDatasets — used only to
+		// draw the whisker below, never as bar data itself. null wherever
+		// there's no spread to show (Bear === Bull, e.g. Ten Cap always, or
+		// any method whose Bull/Bear tabs still match).
+		const whiskerOf = (bearVal: number, bullVal: number): [number, number] | null => {
+			if (!isFinite(bearVal) || !isFinite(bullVal) || bearVal === bullVal) return null;
+			return [clampMos(Math.min(bearVal, bullVal)), clampMos(Math.max(bearVal, bullVal))];
+		};
+		const whiskersByDataset: ([number, number] | null)[][] = [
+			...METHODS.map((m) =>
+				tickers.map((t) => {
+					const { bear, bull } = this.plugin.valuations[t].scenarios;
+					return whiskerOf(bear.results[m.mosKey], bull.results[m.mosKey]);
+				})
+			),
+			tickers.map((t) => {
+				const { bear, bull } = this.plugin.valuations[t].scenarios;
+				const bearVals = METHODS.map((m) => bear.results[m.mosKey]).filter((v) => isFinite(v));
+				const bullVals = METHODS.map((m) => bull.results[m.mosKey]).filter((v) => isFinite(v));
+				if (bearVals.length === 0 || bullVals.length === 0) return null;
+				return whiskerOf(avg(bearVals), avg(bullVals));
+			}),
+		];
+
+		// Draws the Bear-to-Bull whisker over a bar: a horizontal line with
+		// small vertical end caps, using the bar's own rendered geometry so
+		// it's pixel-aligned regardless of chart layout.
+		const scenarioWhiskerPlugin = {
+			id: "scenarioWhisker",
+			afterDatasetsDraw: (chart: Chart) => {
+				const { ctx } = chart;
+				const xScale = chart.scales.x;
+				if (!xScale) return;
+				chart.data.datasets.forEach((_dataset, datasetIndex) => {
+					const meta = chart.getDatasetMeta(datasetIndex);
+					const whiskers = whiskersByDataset[datasetIndex];
+					meta.data.forEach((element, index) => {
+						const whisker = whiskers?.[index];
+						if (!whisker) return;
+						const [lo, hi] = whisker;
+						const { y, height } = element.getProps(["y", "height"], true);
+						const x0 = xScale.getPixelForValue(lo);
+						const x1 = xScale.getPixelForValue(hi);
+						const capHalf = height / 2 + 2;
+						ctx.save();
+						ctx.strokeStyle = normalColor;
+						ctx.lineWidth = 2;
+						ctx.beginPath();
+						ctx.moveTo(x0, y);
+						ctx.lineTo(x1, y);
+						ctx.moveTo(x0, y - capHalf);
+						ctx.lineTo(x0, y + capHalf);
+						ctx.moveTo(x1, y - capHalf);
+						ctx.lineTo(x1, y + capHalf);
+						ctx.stroke();
+						ctx.restore();
+					});
+				});
+			},
+		};
+
 		// Force a symmetric axis around 0 — otherwise Chart.js auto-scales to
 		// the data's actual min/max, which shifts 0 off-center (and shifts the
 		// tick labels) depending on which tickers happen to be on screen.
-		const allValues = [...datasets, averageBar].flatMap((d) => d.data).filter((v): v is number => v !== null);
+		// Includes whiskersByDataset so a Bear/Bull spread that reaches
+		// further than Base still fits on screen.
+		const allValues = [...allDatasets.flatMap((d) => d.data), ...whiskersByDataset.flat()]
+			.filter((v): v is number | [number, number] => v !== null)
+			.flatMap((v) => (Array.isArray(v) ? v : [v]));
 		const maxAbs = allValues.length ? Math.max(...allValues.map(Math.abs)) : 0;
 		const axisBound = Math.max(25, Math.ceil(maxAbs / 25) * 25);
 
 		this.charts.push(
 			new Chart(canvas, {
 				type: "bar",
-				data: { labels: tickers, datasets: [...datasets, averageBar] },
+				data: { labels: tickers, datasets: allDatasets },
 				options: {
 					indexAxis: "y",
 					responsive: true,
@@ -541,33 +913,53 @@ export class StockValuationsView extends ItemView {
 							callbacks: {
 								label: (ctx) => {
 									const ticker = tickers[ctx.dataIndex];
-									const r = this.plugin.valuations[ticker].results;
-									// Report the true, uncapped MOS here even though the bar
-									// itself is clamped at MOS_FLOOR for display.
-									let trueMos: number | undefined;
-									let iv: number | undefined;
-									if (ctx.datasetIndex < METHODS.length) {
-										trueMos = r[METHODS[ctx.datasetIndex].mosKey];
-										iv = r[METHODS[ctx.datasetIndex].ivKey];
-									} else {
-										const mosVals = METHODS.map((m) => r[m.mosKey]).filter((v) => isFinite(v));
-										trueMos = mosVals.length
-											? mosVals.reduce((a, b) => a + b, 0) / mosVals.length
-											: undefined;
-										const ivs = METHODS.map((m) => r[m.ivKey]).filter((v) => isFinite(v));
-										iv = ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length : undefined;
-									}
-									const mosPct =
-										trueMos !== undefined && isFinite(trueMos) ? formatPercent(trueMos) : "—";
-									const ivStr = iv !== undefined && isFinite(iv) ? formatCurrency(iv) : "—";
-									const price = parseFloat(this.plugin.valuations[ticker].state.price);
+									const { base, bear, bull } = this.plugin.valuations[ticker].scenarios;
+									const price = parseFloat(base.state.price);
 									const priceStr = isFinite(price) ? formatCurrency(price) : "—";
-									return `${ctx.dataset.label}: ${mosPct} (IV ${ivStr}, Price ${priceStr})`;
+
+									let baseMos: number | undefined;
+									let bearMos: number | undefined;
+									let bullMos: number | undefined;
+									let baseIv: number | undefined;
+									let bearIv: number | undefined;
+									let bullIv: number | undefined;
+									if (ctx.datasetIndex < METHODS.length) {
+										const m = METHODS[ctx.datasetIndex];
+										baseMos = base.results[m.mosKey];
+										bearMos = bear.results[m.mosKey];
+										bullMos = bull.results[m.mosKey];
+										baseIv = base.results[m.ivKey];
+										bearIv = bear.results[m.ivKey];
+										bullIv = bull.results[m.ivKey];
+									} else {
+										const avgFinite = (vals: number[]) =>
+											vals.length ? avg(vals) : undefined;
+										baseMos = avgFinite(METHODS.map((m) => base.results[m.mosKey]).filter((v) => isFinite(v)));
+										bearMos = avgFinite(METHODS.map((m) => bear.results[m.mosKey]).filter((v) => isFinite(v)));
+										bullMos = avgFinite(METHODS.map((m) => bull.results[m.mosKey]).filter((v) => isFinite(v)));
+										baseIv = avgFinite(METHODS.map((m) => base.results[m.ivKey]).filter((v) => isFinite(v)));
+										bearIv = avgFinite(METHODS.map((m) => bear.results[m.ivKey]).filter((v) => isFinite(v)));
+										bullIv = avgFinite(METHODS.map((m) => bull.results[m.ivKey]).filter((v) => isFinite(v)));
+									}
+									const pct = (v: number | undefined) =>
+										v !== undefined && isFinite(v) ? formatPercent(v) : "—";
+									const cur = (v: number | undefined) =>
+										v !== undefined && isFinite(v) ? formatCurrency(v) : "—";
+
+									if (bearMos === bullMos) {
+										return `${ctx.dataset.label}: ${pct(baseMos)} (IV ${cur(baseIv)}, Price ${priceStr})`;
+									}
+									return [
+										`${ctx.dataset.label}: Base ${pct(baseMos)} (IV ${cur(baseIv)})`,
+										`Bear ${pct(bearMos)} (IV ${cur(bearIv)}) · Bull ${pct(bullMos)} (IV ${cur(bullIv)})`,
+										`Price ${priceStr}`,
+									];
 								},
 							},
 						},
 					},
 				},
+				plugins: [scenarioWhiskerPlugin],
 			})
 		);
 	}
@@ -576,7 +968,9 @@ export class StockValuationsView extends ItemView {
 	// Standalone section: Ten Cap yield minus the AAA bond yield assumed at
 	// save time, per ticker — the actual "ten cap" question (Munger/Buffett
 	// owner-earnings framing): is this business paying more than a safe bond?
-	// Diverging bar at 0, same visual language as the MoS chart above.
+	// Diverging bar at 0, same visual language as the MoS chart above. Ten Cap
+	// has no scenario-specific input (see SCENARIO_SPECIFIC_FIELDS), so this
+	// chart is scenario-invariant by construction — reads straight off Base.
 	// ---------------------------------------------------------------------
 
 	private renderYieldSpreadChart(root: HTMLElement, tickers: string[]): void {
@@ -591,8 +985,8 @@ export class StockValuationsView extends ItemView {
 		const tenCap = METHODS.find((m) => m.label === "Ten Cap")!;
 
 		const spreadOf = (t: string) => {
-			const state = this.plugin.valuations[t].state;
-			const yield_ = this.plugin.valuations[t].results.tenCapYield;
+			const state = this.plugin.valuations[t].scenarios.base.state;
+			const yield_ = this.plugin.valuations[t].scenarios.base.results.tenCapYield;
 			const bond = parseFloat(state.aaaYield);
 			return isFinite(yield_) && isFinite(bond) ? yield_ - bond : null;
 		};
@@ -639,8 +1033,8 @@ export class StockValuationsView extends ItemView {
 							callbacks: {
 								label: (ctx) => {
 									const ticker = tickers[ctx.dataIndex];
-									const state = this.plugin.valuations[ticker].state;
-									const yield_ = this.plugin.valuations[ticker].results.tenCapYield;
+									const state = this.plugin.valuations[ticker].scenarios.base.state;
+									const yield_ = this.plugin.valuations[ticker].scenarios.base.results.tenCapYield;
 									const bond = parseFloat(state.aaaYield);
 									return `Ten Cap yield ${formatPercent(yield_)} vs. bond ${formatPercent(bond)}`;
 								},
@@ -672,6 +1066,11 @@ export class StockValuationsView extends ItemView {
 		this.charts = [];
 	}
 
+	private destroyTabulator(): void {
+		this.tabulator?.destroy();
+		this.tabulator = null;
+	}
+
 	// ---------------------------------------------------------------------
 	// Research links — an optional, opt-in column. The linked file's
 	// contents are never read; the plugin only stores and opens a path.
@@ -679,54 +1078,6 @@ export class StockValuationsView extends ItemView {
 
 	private isResearchLinksEnabled(): boolean {
 		return researchLinksActive(this.plugin.settings);
-	}
-
-	private renderResearchCell(row: HTMLElement, ticker: string, saved: SavedValuation): void {
-		const cell = row.createEl("td", { cls: "sv-research-cell" });
-		const path = saved.researchNotePath;
-		const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
-
-		if (path && file instanceof TFile) {
-			const wrap = cell.createSpan({ cls: "sv-research-linked" });
-
-			const openBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(openBtn.createSpan(), "file-text");
-			setTooltip(openBtn, `Open ${file.basename}`);
-			openBtn.addEventListener("click", (e) => {
-				e.stopPropagation();
-				void this.app.workspace.getLeaf(true).openFile(file);
-			});
-
-			const unlinkBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
-			setIcon(unlinkBtn.createSpan(), "unlink");
-			setTooltip(unlinkBtn, "Remove link (the note itself is untouched)");
-			unlinkBtn.addEventListener("click", (e) => {
-				e.stopPropagation();
-				new ConfirmModal(
-					this.app,
-					`Remove the research link for ${ticker}? "${file.basename}" itself won't be touched.`,
-					() => {
-						delete saved.researchNotePath;
-						void this.plugin.saveValuations();
-						this.render();
-					},
-					"Remove link"
-				).open();
-			});
-			return;
-		}
-
-		const linkBtn = cell.createEl("button", { cls: "sv-research-empty" });
-		setIcon(linkBtn.createSpan(), "link");
-		linkBtn.createSpan({ text: "Link note" });
-		setTooltip(
-			linkBtn,
-			path ? `Linked file "${path}" not found — click to relink` : "Link an existing note, or create a new one"
-		);
-		linkBtn.addEventListener("click", (e) => {
-			e.stopPropagation();
-			this.openLinkNoteMenu(e, ticker);
-		});
 	}
 
 	private openLinkNoteMenu(evt: MouseEvent, ticker: string): void {
@@ -789,14 +1140,6 @@ export class StockValuationsView extends ItemView {
 			console.error("Stock Valuations: failed to create research note", e);
 			new Notice(`Couldn't create "${path}" — check the folder and filename and try again.`);
 		}
-	}
-
-	private mosCell(row: HTMLElement, mos: number): void {
-		const cls = !isFinite(mos) ? "" : mos >= 0 ? "sv-mos-pos" : "sv-mos-neg";
-		row.createEl("td", {
-			text: isFinite(mos) ? formatPercent(mos) : "—",
-			cls: `sv-num ${cls}`.trim(),
-		});
 	}
 
 	// ---------------------------------------------------------------------
@@ -901,6 +1244,7 @@ export class StockValuationsView extends ItemView {
 		const heroMain = hero.createDiv({ cls: "sv-hero-main" });
 		this.heroTickerEl = heroMain.createSpan({ cls: "sv-hero-ticker", text: "New valuation" });
 		this.heroPriceEl = heroMain.createSpan({ cls: "sv-hero-price", text: "" });
+		this.renderScenarioTabs(hero);
 
 		const unitsRow = root.createDiv({ cls: "sv-units-row" });
 		unitsRow.createSpan({ cls: "sv-units-label", text: "Units" });
@@ -933,13 +1277,20 @@ export class StockValuationsView extends ItemView {
 			text: "Fetch data",
 			cls: "sv-link-btn",
 		});
-		setTooltip(
-			fetchAllBtn,
-			"Fills blank or zero fields below with price (Yahoo Finance) and fundamentals (SEC EDGAR). Never overwrites a value you've already entered."
-		);
-		fetchAllBtn.addEventListener("click", () => {
-			void this.fetchAllIntoForm(fetchAllBtn);
-		});
+		// Every field it can fill is a shared fact, not a scenario assumption —
+		// same restriction as those fields' inputs, so it's only usable from Base.
+		if (this.activeScenario === "base") {
+			setTooltip(
+				fetchAllBtn,
+				"Fills blank or zero fields below with price (Yahoo Finance) and fundamentals (SEC EDGAR). Never overwrites a value you've already entered."
+			);
+			fetchAllBtn.addEventListener("click", () => {
+				void this.fetchAllIntoForm(fetchAllBtn);
+			});
+		} else {
+			fetchAllBtn.disabled = true;
+			setTooltip(fetchAllBtn, "Switch to the Base tab to fetch data.");
+		}
 		const updateYahooLink = () => {
 			const ticker = this.state.ticker.trim();
 			yahooLink.toggleClass("sv-hidden", !ticker);
@@ -997,6 +1348,20 @@ export class StockValuationsView extends ItemView {
 		this.recalculate();
 	}
 
+	// The bull/base/bear tab strip on the form screen — switches which
+	// scenario's fields are shown/edited. See switchScenario().
+	private renderScenarioTabs(container: HTMLElement): void {
+		const tabs = container.createDiv({ cls: "sv-scenario-tabs" });
+		for (const key of SCENARIO_KEYS) {
+			const tab = tabs.createEl("button", {
+				text: SCENARIO_LABELS[key],
+				cls: `sv-scenario-tab sv-scenario-tab-${key}${key === this.activeScenario ? " is-active" : ""}`,
+			});
+			setTooltip(tab, SCENARIO_TOOLTIPS[key]);
+			tab.addEventListener("click", () => this.switchScenario(key));
+		}
+	}
+
 	private section(container: HTMLElement, title: string): HTMLElement {
 		const box = container.createDiv({ cls: "sv-section" });
 		box.createEl("h4", { text: title });
@@ -1012,6 +1377,13 @@ export class StockValuationsView extends ItemView {
 		options?: { readOnly?: boolean }
 	): HTMLInputElement {
 		const wrap = container.createDiv({ cls: "sv-field" });
+		// On Bull/Bear, make the handful of fields you can actually edit here
+		// (the growth assumptions) visually pop against the read-only,
+		// inherited-from-Base majority — colored to match the active tab.
+		if (this.activeScenario !== "base" && SCENARIO_SPECIFIC_FIELDS.has(key)) {
+			wrap.addClass("sv-field-editable-scenario");
+			wrap.addClass(`sv-field-editable-${this.activeScenario}`);
+		}
 		const labelRow = wrap.createDiv({ cls: "sv-field-label-row" });
 
 		const labelGroup = labelRow.createDiv({ cls: "sv-field-label-group" });
@@ -1059,13 +1431,25 @@ export class StockValuationsView extends ItemView {
 
 		input.value = isFormattedNumber ? formatWithCommas(this.state[key]) : this.state[key];
 
-		if (options?.readOnly) {
-			// Computed, not typed in (market cap = price × shares) — no focus/blur/
-			// input wiring at all, just a live display recalculate() keeps in sync.
+		// Shared facts (everything but the four growth assumptions) are only
+		// editable from the Base tab — on Bull/Bear they're shown read-only,
+		// inherited live from whatever Base holds (kept in sync by
+		// setStateField, so the value here is already correct).
+		const inherited = this.activeScenario !== "base" && !SCENARIO_SPECIFIC_FIELDS.has(key);
+
+		if (options?.readOnly || inherited) {
+			// No focus/blur/input wiring at all — just a live display that
+			// recalculate() (computed fields) or setStateField() (inherited
+			// fields) keeps in sync.
 			input.readOnly = true;
 			input.tabIndex = -1;
 			input.addClass("sv-readonly-field");
-			setTooltip(input, "Computed as price × shares — not an input you can edit.");
+			setTooltip(
+				input,
+				options?.readOnly
+					? "Computed as price × shares — not an input you can edit."
+					: "Shared across every scenario — edit it from the Base tab."
+			);
 			return input;
 		}
 
@@ -1082,13 +1466,13 @@ export class StockValuationsView extends ItemView {
 			if (isFormattedNumber) {
 				const cleaned = sanitizeNumericInput(input.value);
 				if (cleaned !== input.value) input.value = cleaned;
-				this.state[key] = cleaned;
+				this.setStateField(key, cleaned);
 			} else if (type === "text") {
 				const upper = input.value.toUpperCase();
 				if (upper !== input.value) input.value = upper;
-				this.state[key] = upper;
+				this.setStateField(key, upper);
 			} else {
-				this.state[key] = input.value;
+				this.setStateField(key, input.value);
 			}
 			this.recalculate();
 		});
@@ -1109,14 +1493,20 @@ export class StockValuationsView extends ItemView {
 	// keep representing the same real-world value, not just relabeled.
 	// Blank fields are left alone; user-typed values are rescaled exactly
 	// like fetched ones, since there's no way to tell them apart once stored.
+	// Money/share scale is shared across all three scenarios (it's not a
+	// bull/base/bear assumption), so every scenario's typed values need
+	// rescaling here, not just the one on screen — otherwise a scale switch
+	// silently leaves the other two tabs' numbers off by the old ratio.
 	private rescaleFields(keys: ReadonlySet<keyof FormState>, oldScale: ScaleUnit, newScale: ScaleUnit): void {
 		if (oldScale === newScale) return;
 		const ratio = SCALE_MULTIPLIERS[oldScale] / SCALE_MULTIPLIERS[newScale];
-		for (const key of keys) {
-			const raw = this.state[key];
-			const parsed = parseFloat(raw);
-			if (raw.trim() === "" || isNaN(parsed)) continue;
-			this.state[key] = this.roundForField(parsed * ratio);
+		for (const scenario of Object.values(this.scenarios)) {
+			for (const key of keys) {
+				const raw = scenario.state[key];
+				const parsed = parseFloat(raw);
+				if (raw.trim() === "" || isNaN(parsed)) continue;
+				scenario.state[key] = this.roundForField(parsed * ratio);
+			}
 		}
 	}
 
@@ -1187,7 +1577,7 @@ export class StockValuationsView extends ItemView {
 			if (this.isBlankOrZero("price")) {
 				const price = await fetchQuotePrice(ticker);
 				if (price !== null) {
-					this.state.price = this.roundForField(price);
+					this.setStateField("price", this.roundForField(price));
 					filled.push("Current price");
 				} else {
 					unavailable.push("Current price (Yahoo Finance)");
@@ -1221,7 +1611,7 @@ export class StockValuationsView extends ItemView {
 					else if (kind === "shares") scaled = field.value / SCALE_MULTIPLIERS[this.sharesScale];
 					else if (kind === "percent") scaled = field.value * 100;
 					else scaled = field.value; // perShare — always actual dollars, never scaled
-					this.state[key] = this.roundForField(scaled);
+					this.setStateField(key, this.roundForField(scaled));
 					filled.push(label);
 				};
 
@@ -1299,13 +1689,18 @@ export class StockValuationsView extends ItemView {
 					failed.push(ticker);
 					continue;
 				}
-				record.state.price = this.roundForField(price);
-				record.results = computeResultsForState(
-					record.state,
-					record.moneyScale,
-					record.sharesScale,
-					this.plugin.settings.taxRate
-				);
+				// Applies to every scenario, not just base — right now all three
+				// hold identical inputs (no scenario editor yet), so a price
+				// refresh keeps them in sync rather than silently desyncing them.
+				for (const scenario of Object.values(record.scenarios)) {
+					scenario.state.price = this.roundForField(price);
+					scenario.results = computeResultsForState(
+						scenario.state,
+						record.moneyScale,
+						record.sharesScale,
+						this.plugin.settings.taxRate
+					);
+				}
 				updated++;
 			}
 		} finally {
@@ -1327,6 +1722,10 @@ export class StockValuationsView extends ItemView {
 	private recalculate(): void {
 		// Mutates this.state.mktCap as a side effect — see computeResultsForState.
 		this.results = computeResultsForState(this.state, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
+		// this.state is the same object as this.scenarios[activeScenario].state
+		// (mutated in place above), but results is a fresh object each call —
+		// write it back explicitly so the scenario map stays current.
+		this.scenarios[this.activeScenario].results = this.results;
 		this.mktCapInput.value = formatWithCommas(this.state.mktCap);
 		this.renderResults();
 	}

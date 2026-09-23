@@ -3,3 +3,5 @@ main.js
 *.js.map
 .DS_Store
 data.json
+ideas.md
+plan.md

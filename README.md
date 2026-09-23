@@ -22,13 +22,14 @@ Each method also reports a **margin of safety** — how far below intrinsic valu
 - Live price lookup by ticker via Yahoo Finance; price and EPS are always entered as actual per-share dollars, never scaled
 - Per-field help tooltips (the `?` button next to each input)
 - A configurable **input scale** (ones/thousands/millions/billions) applied separately to money figures (debt, FCF, OCF, capex, market cap, ...) and to share counts — so you can key in numbers exactly as a filing reports them, without doing the unit math yourself
-- **Save** stores the valuation keyed by ticker, overwriting any prior save for that ticker
+- **Bull / Base / Bear scenario tabs** — DCF and Graham project three growth scenarios side by side, each independently editable; every other field (price, shares, WACC inputs, trailing financials, ...) is a shared fact edited once on Base and inherited read-only on Bull/Bear. Ten Cap has no scenario-specific input, so it's always a single value regardless of tab.
+- **Save** stores all three scenarios keyed by ticker, overwriting any prior save for that ticker
 
 ### Saved valuations table
 
-- One row per saved ticker, with each method's intrinsic value, Ten Cap yield, current price, and last-updated date
-- Edit re-opens the form pre-filled with the saved inputs; Delete removes the row (with confirmation)
-- Two charts per stock: margin of safety by method, and price vs. fair value
+- One row per saved ticker; DCF and Graham each split into Bear/Base/Bull sub-columns, alongside Ten Cap's IV/MoS/yield, current price, and last-updated date
+- Sortable columns, pagination, and clicking a row opens it for editing; Delete removes the row (with confirmation)
+- Two charts per page of stocks: margin of safety by method (one bar per method off Base, with a whisker marking the Bear-to-Bull spread where scenarios diverge), and Ten Cap yield vs. bond yield
 
 ### Research links (optional)
 
@@ -36,7 +37,7 @@ Off by default (**Settings → Optional features → Link research notes**). Whe
 
 ### Vault summary note
 
-Every save/delete regenerates a markdown table of all saved valuations at a location you configure in Settings (default `Stock Valuations/Stock Valuations.md`). It's the vault-visible mirror of the plugin's own data — rewritten in full on every change, so don't hand-edit it; edits there won't persist. It includes a **Research** column (a link) when research links are enabled above.
+Every save/delete regenerates a markdown table of all saved valuations at a location you configure in Settings (default `Stock Valuations/Stock Valuations.md`). It's the vault-visible mirror of the plugin's own data — rewritten in full on every change, so don't hand-edit it; edits there won't persist. DCF and Graham each get a Bear/Base/Bull column (IV and MoS packed into one cell, e.g. `$164/-33%`); Ten Cap has no scenario-specific input, so it's a single column. It includes a **Research** column (a link) when research links are enabled above.
 
 ### Help & methodology
 

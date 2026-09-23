@@ -8,6 +8,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.5.0",
+		highlights: [
+			"🐂🐻 Bull/Base/Bear scenario tabs — DCF and Graham now project three growth scenarios side by side; shared facts (price, shares, WACC inputs, etc.) stay in sync across all three automatically, and Ten Cap (which has no scenario-specific input) stays a single value",
+			"⚡ The saved-valuations table is now sortable (click any column header), paginated, and clicking a row opens it for editing; DCF and Graham each split into Bear/Base/Bull sub-columns",
+			"📊 Margin-of-safety chart redesigned: one bar per method off the Base scenario, with a thin whisker marking the Bear-to-Bull spread wherever a ticker's scenarios diverge",
+		],
+	},
+	{
 		version: "0.4.0",
 		highlights: [
 			'🔄 New "Refresh prices" button on the table — updates every ticker\'s price in one click, and the vault summary note along with it',

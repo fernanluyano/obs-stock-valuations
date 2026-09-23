@@ -8,16 +8,19 @@ import {
 } from "./settings";
 import { ValuationTable } from "./valuationStore";
 import { syncValuationsNote } from "./noteSync";
+import { CURRENT_SCHEMA_VERSION, LegacySavedValuation, migrateValuationsToV2 } from "./migrations";
 
 interface PluginData {
 	settings: StockValuationsSettings;
 	valuations: ValuationTable;
+	schemaVersion?: number;
 	lastSeenVersion?: string;
 }
 
 export default class StockValuationsPlugin extends Plugin {
 	settings!: StockValuationsSettings;
 	valuations!: ValuationTable;
+	private schemaVersion: number = CURRENT_SCHEMA_VERSION;
 	private lastSeenVersion: string | undefined;
 
 	async onload(): Promise<void> {
@@ -92,10 +95,31 @@ export default class StockValuationsPlugin extends Plugin {
 	}
 
 	async loadPluginData(): Promise<void> {
-		const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
+		const data = ((await this.loadData()) ?? {}) as Partial<PluginData> & {
+			valuations?: Record<string, LegacySavedValuation> | ValuationTable;
+		};
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
-		this.valuations = data.valuations ?? {};
 		this.lastSeenVersion = data.lastSeenVersion;
+
+		// Missing schemaVersion means the old single-scenario shape. Fast path
+		// (already migrated) is a single number comparison — no loop, no
+		// per-record shape checks — so every load after the first migration
+		// stays cheap.
+		const schemaVersion = data.schemaVersion ?? 1;
+		if (schemaVersion >= CURRENT_SCHEMA_VERSION) {
+			this.valuations = (data.valuations as ValuationTable) ?? {};
+			this.schemaVersion = schemaVersion;
+			return;
+		}
+
+		this.valuations = migrateValuationsToV2(
+			(data.valuations as Record<string, LegacySavedValuation>) ?? {}
+		);
+		this.schemaVersion = CURRENT_SCHEMA_VERSION;
+		// Persist right away so data.json and the vault summary note both move
+		// to the new shape immediately — a vault that's only ever viewed, never
+		// edited, still ends up migrated instead of stuck on the old shape.
+		await this.saveValuations();
 	}
 
 	async saveSettings(): Promise<void> {
@@ -118,7 +142,12 @@ export default class StockValuationsPlugin extends Plugin {
 	}
 
 	private async persist(): Promise<void> {
-		const data: PluginData = { settings: this.settings, valuations: this.valuations, lastSeenVersion: this.lastSeenVersion };
+		const data: PluginData = {
+			settings: this.settings,
+			valuations: this.valuations,
+			schemaVersion: this.schemaVersion,
+			lastSeenVersion: this.lastSeenVersion,
+		};
 		await this.saveData(data);
 	}
 }

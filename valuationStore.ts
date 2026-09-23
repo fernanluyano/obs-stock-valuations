@@ -43,13 +43,19 @@ export interface Results {
 	tenCapMos: number;
 }
 
+export type ScenarioKey = "bull" | "base" | "bear";
+
+export interface Scenario {
+	state: FormState;
+	results: Results;
+}
+
 // A saved row in the plugin's own valuation table — created and edited only
 // through the calculator form, never hand-edited.
 export interface SavedValuation {
-	state: FormState;
+	scenarios: Record<ScenarioKey, Scenario>;
 	moneyScale: ScaleUnit;
 	sharesScale: ScaleUnit;
-	results: Results;
 	updatedAt: number; // epoch ms
 
 	// Vault path to a linked research note, set only through the table's
