@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.5.2",
+		highlights: [
+			"📱💻 Polished up the valuations table's layout — columns now size themselves sensibly instead of one stretching oddly wide, on both mobile and desktop",
+			"🐂🐻 DCF and Graham's Bear/Bull figures are now clearly labeled (e.g. \"Graham Bear\") so there's no mixing them up when a narrow screen tucks them into a row's expandable details",
+		],
+	},
+	{
 		version: "0.5.0",
 		highlights: [
 			"🐂🐻 Bull/Base/Bear scenario tabs — DCF and Graham now project three growth scenarios side by side; shared facts (price, shares, WACC inputs, etc.) stay in sync across all three automatically, and Ten Cap (which has no scenario-specific input) stays a single value",
