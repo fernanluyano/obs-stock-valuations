@@ -5,7 +5,6 @@
 	--sv-neg: #c2564f;
 
 	padding: var(--size-4-6) var(--size-4-8) var(--size-4-8);
-	max-width: 1200px;
 }
 
 /* ===========================================================
@@ -1512,6 +1511,11 @@ body.tabulator-print-fullscreen-hide > *:not(.tabulator-print-fullscreen) {
 	grid-template-columns: minmax(0, 1fr) 280px;
 	gap: var(--size-4-8);
 	align-items: start;
+	/* Caps the edit form's width so its fields stay readable on wide
+	   screens — scoped here rather than on .stock-valuations-view because
+	   the table screen (which shares that root) needs the full window
+	   width or its columns collapse unnecessarily. */
+	max-width: 1200px;
 }
 
 .sv-form-col {

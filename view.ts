@@ -572,31 +572,25 @@ export class StockValuationsView extends ItemView {
 				responsive: 0,
 			},
 			{
-				title: "DCF IV / MoS",
-				headerHozAlign: "center",
-				columns: [
-					{
-						title: "Bear",
-						field: "dcfBearMos",
-						formatter: ivMosFormatter("dcfBearIv"),
-						cssClass: "sv-num sv-scenario-col sv-subheader",
-						responsive: 3,
-					},
-					{
-						title: "Base",
-						field: "dcfBaseMos",
-						formatter: ivMosFormatter("dcfBaseIv"),
-						cssClass: "sv-num sv-scenario-col sv-subheader",
-						responsive: 1,
-					},
-					{
-						title: "Bull",
-						field: "dcfBullMos",
-						formatter: ivMosFormatter("dcfBullIv"),
-						cssClass: "sv-num sv-scenario-col sv-subheader",
-						responsive: 3,
-					},
-				],
+				title: "DCF Bear",
+				field: "dcfBearMos",
+				formatter: ivMosFormatter("dcfBearIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "DCF Base",
+				field: "dcfBaseMos",
+				formatter: ivMosFormatter("dcfBaseIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 1,
+			},
+			{
+				title: "DCF Bull",
+				field: "dcfBullMos",
+				formatter: ivMosFormatter("dcfBullIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
 			},
 			{
 				title: "Ten Cap IV / MoS",
@@ -613,31 +607,25 @@ export class StockValuationsView extends ItemView {
 				responsive: 2,
 			},
 			{
-				title: "Graham IV / MoS",
-				headerHozAlign: "center",
-				columns: [
-					{
-						title: "Bear",
-						field: "grahamBearMos",
-						formatter: ivMosFormatter("grahamBearIv"),
-						cssClass: "sv-num sv-scenario-col sv-subheader",
-						responsive: 3,
-					},
-					{
-						title: "Base",
-						field: "grahamBaseMos",
-						formatter: ivMosFormatter("grahamBaseIv"),
-						cssClass: "sv-num sv-scenario-col sv-subheader",
-						responsive: 1,
-					},
-					{
-						title: "Bull",
-						field: "grahamBullMos",
-						formatter: ivMosFormatter("grahamBullIv"),
-						cssClass: "sv-num sv-scenario-col sv-subheader",
-						responsive: 3,
-					},
-				],
+				title: "Graham Bear",
+				field: "grahamBearMos",
+				formatter: ivMosFormatter("grahamBearIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "Graham Base",
+				field: "grahamBaseMos",
+				formatter: ivMosFormatter("grahamBaseIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 1,
+			},
+			{
+				title: "Graham Bull",
+				field: "grahamBullMos",
+				formatter: ivMosFormatter("grahamBullIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
 			},
 			{
 				title: "Price",
@@ -667,7 +655,7 @@ export class StockValuationsView extends ItemView {
 			});
 		}
 		columns.push({
-			title: "",
+			title: "Actions",
 			field: "ticker",
 			headerSort: false,
 			hozAlign: "right",
@@ -689,13 +677,18 @@ export class StockValuationsView extends ItemView {
 		this.tabulator = new Tabulator(tableEl, {
 			data: rows,
 			columns,
-			layout: "fitDataStretch",
+			// "fitDataStretch" would force the LAST column to absorb all
+			// leftover container width (see Tabulator's fitDataStretch mode) —
+			// wrong here since the last column is the blank-title, icon-only
+			// actions column. "fitData" sizes every column to its content and
+			// leaves any excess width as plain background instead.
+			layout: "fitData",
 			// Collapses lower-priority columns (see each column's `responsive`
 			// value above) into the row's expandable "+" list once the table no
 			// longer fits — otherwise a table this wide (three scenario columns
 			// per method) is unusable on an iPad/phone-width screen.
 			responsiveLayout: "collapse",
-			columnDefaults: { hozAlign: "right", headerSort: true, resizable: false },
+			columnDefaults: { hozAlign: "right", headerSort: true },
 			initialSort: [{ column: "ticker", dir: "asc" }],
 			pagination: true,
 			paginationSize: StockValuationsView.PAGE_SIZE,
