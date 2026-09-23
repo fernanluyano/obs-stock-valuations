@@ -12,7 +12,14 @@ import {
 	setTooltip,
 } from "obsidian";
 import { BarController, BarElement, CategoryScale, Chart, LinearScale, Legend, Tooltip } from "chart.js";
-import { FormatModule, InteractionModule, PageModule, SortModule, Tabulator } from "tabulator-tables";
+import {
+	FormatModule,
+	InteractionModule,
+	PageModule,
+	ResponsiveLayoutModule,
+	SortModule,
+	Tabulator,
+} from "tabulator-tables";
 import type { CellComponent, ColumnDefinition } from "tabulator-tables";
 import type StockValuationsPlugin from "./main";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
@@ -30,9 +37,10 @@ import { ensureFolderExists } from "./noteSync";
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
 // Core Tabulator + only the modules the table actually uses (cell formatters,
-// column sorting, pagination, row click) — not TabulatorFull, which bundles
-// every module (filtering, editing, export, print, etc.) and is ~2.5x the size.
-Tabulator.registerModule([FormatModule, SortModule, PageModule, InteractionModule]);
+// column sorting, pagination, row click, responsive column collapsing) — not
+// TabulatorFull, which bundles every module (filtering, editing, export,
+// print, etc.) and is ~2.5x the size.
+Tabulator.registerModule([FormatModule, SortModule, PageModule, InteractionModule, ResponsiveLayoutModule]);
 
 export const VIEW_TYPE_STOCK_VALUATIONS = "stock-valuations-view";
 
@@ -541,8 +549,28 @@ export class StockValuationsView extends ItemView {
 		// and Graham each get a "IV / MoS" group with Bear/Base/Bull
 		// sub-columns — explicit labels, IV and MoS packed into the same cell
 		// (ivMosFormatter) rather than IV living in its own column.
+		// `responsive` (higher = hidden sooner) keeps Symbol, each method's Base
+		// case, Price, and Actions on screen on a narrow iPad/phone width;
+		// everything else tucks into the row's expandable "+" collapse list
+		// (the toggle column below) rather than forcing horizontal scrolling.
 		const columns: ColumnDefinition[] = [
-			{ title: "Symbol", field: "ticker", cssClass: "sv-symbol-cell", hozAlign: "left", headerHozAlign: "left" },
+			{
+				title: "",
+				formatter: "responsiveCollapse",
+				hozAlign: "center",
+				headerSort: false,
+				width: 30,
+				minWidth: 30,
+				responsive: 0,
+			},
+			{
+				title: "Symbol",
+				field: "ticker",
+				cssClass: "sv-symbol-cell",
+				hozAlign: "left",
+				headerHozAlign: "left",
+				responsive: 0,
+			},
 			{
 				title: "DCF IV / MoS",
 				headerHozAlign: "center",
@@ -552,18 +580,21 @@ export class StockValuationsView extends ItemView {
 						field: "dcfBearMos",
 						formatter: ivMosFormatter("dcfBearIv"),
 						cssClass: "sv-num sv-scenario-col sv-subheader",
+						responsive: 3,
 					},
 					{
 						title: "Base",
 						field: "dcfBaseMos",
 						formatter: ivMosFormatter("dcfBaseIv"),
 						cssClass: "sv-num sv-scenario-col sv-subheader",
+						responsive: 1,
 					},
 					{
 						title: "Bull",
 						field: "dcfBullMos",
 						formatter: ivMosFormatter("dcfBullIv"),
 						cssClass: "sv-num sv-scenario-col sv-subheader",
+						responsive: 3,
 					},
 				],
 			},
@@ -572,12 +603,14 @@ export class StockValuationsView extends ItemView {
 				field: "tenCapMos",
 				formatter: ivMosFormatter("tenCapIv"),
 				cssClass: "sv-num sv-scenario-col",
+				responsive: 1,
 			},
 			{
 				title: "Ten Cap Yield",
 				field: "tenCapYield",
 				formatter: (cell) => formatPercent(cell.getValue() as number, 1),
 				cssClass: "sv-num",
+				responsive: 2,
 			},
 			{
 				title: "Graham IV / MoS",
@@ -588,18 +621,21 @@ export class StockValuationsView extends ItemView {
 						field: "grahamBearMos",
 						formatter: ivMosFormatter("grahamBearIv"),
 						cssClass: "sv-num sv-scenario-col sv-subheader",
+						responsive: 3,
 					},
 					{
 						title: "Base",
 						field: "grahamBaseMos",
 						formatter: ivMosFormatter("grahamBaseIv"),
 						cssClass: "sv-num sv-scenario-col sv-subheader",
+						responsive: 1,
 					},
 					{
 						title: "Bull",
 						field: "grahamBullMos",
 						formatter: ivMosFormatter("grahamBullIv"),
 						cssClass: "sv-num sv-scenario-col sv-subheader",
+						responsive: 3,
 					},
 				],
 			},
@@ -608,6 +644,7 @@ export class StockValuationsView extends ItemView {
 				field: "price",
 				formatter: (cell) => formatCurrency(cell.getValue() as number),
 				cssClass: "sv-num",
+				responsive: 1,
 			},
 			{
 				title: "Updated",
@@ -615,6 +652,7 @@ export class StockValuationsView extends ItemView {
 				sorter: "number",
 				formatter: (cell) => window.moment(cell.getValue() as number).format("YYYY-MM-DD"),
 				cssClass: "sv-num sv-updated-cell",
+				responsive: 2,
 			},
 		];
 		if (showResearch) {
@@ -625,6 +663,7 @@ export class StockValuationsView extends ItemView {
 				headerHozAlign: "left",
 				headerSort: false,
 				formatter: this.researchFormatter,
+				responsive: 2,
 			});
 		}
 		columns.push({
@@ -633,6 +672,7 @@ export class StockValuationsView extends ItemView {
 			headerSort: false,
 			hozAlign: "right",
 			formatter: this.actionsFormatter,
+			responsive: 0,
 		});
 
 		// Charts stay scoped to whatever page is currently visible, same as
@@ -650,6 +690,11 @@ export class StockValuationsView extends ItemView {
 			data: rows,
 			columns,
 			layout: "fitDataStretch",
+			// Collapses lower-priority columns (see each column's `responsive`
+			// value above) into the row's expandable "+" list once the table no
+			// longer fits — otherwise a table this wide (three scenario columns
+			// per method) is unusable on an iPad/phone-width screen.
+			responsiveLayout: "collapse",
 			columnDefaults: { hozAlign: "right", headerSort: true, resizable: false },
 			initialSort: [{ column: "ticker", dir: "asc" }],
 			pagination: true,
@@ -678,7 +723,7 @@ export class StockValuationsView extends ItemView {
 		const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
 
 		if (path && file instanceof TFile) {
-			const wrap = document.createElement("span");
+			const wrap = createSpan();
 			wrap.addClass("sv-research-linked");
 
 			const openBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
@@ -708,7 +753,7 @@ export class StockValuationsView extends ItemView {
 			return wrap;
 		}
 
-		const linkBtn = document.createElement("button");
+		const linkBtn = createEl("button");
 		linkBtn.addClass("sv-research-empty");
 		setIcon(linkBtn.createSpan(), "link");
 		linkBtn.createSpan({ text: "Link note" });
@@ -728,7 +773,7 @@ export class StockValuationsView extends ItemView {
 	// so it works as a single returned node for Tabulator's formatter.
 	private actionsFormatter = (cell: CellComponent): HTMLElement => {
 		const ticker = (cell.getData() as TableRow).ticker;
-		const wrap = document.createElement("span");
+		const wrap = createSpan();
 		wrap.addClass("sv-actions-cell");
 
 		const editBtn = wrap.createEl("button", { cls: "sv-icon-btn" });
@@ -848,7 +893,7 @@ export class StockValuationsView extends ItemView {
 						const whisker = whiskers?.[index];
 						if (!whisker) return;
 						const [lo, hi] = whisker;
-						const { y, height } = element.getProps(["y", "height"], true);
+						const { y, height } = element.getProps(["y", "height"], true) as { y: number; height: number };
 						const x0 = xScale.getPixelForValue(lo);
 						const x1 = xScale.getPixelForValue(hi);
 						const capHalf = height / 2 + 2;

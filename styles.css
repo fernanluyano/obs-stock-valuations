@@ -1813,10 +1813,12 @@ td.sv-num {
    sub-columns and Ten Cap's merged column — get tighter padding so the extra
    character width doesn't cost as much as a lone number used to. Applies to
    both the Tabulator header cell and its data cells (cssClass targets both). */
-.sv-subheader,
-.sv-scenario-col {
-	padding-left: var(--size-4-1) !important;
-	padding-right: var(--size-4-1) !important;
+.tabulator .tabulator-header .tabulator-col.sv-subheader .tabulator-col-content,
+.tabulator .tabulator-header .tabulator-col.sv-scenario-col .tabulator-col-content,
+.tabulator-row .tabulator-cell.sv-subheader,
+.tabulator-row .tabulator-cell.sv-scenario-col {
+	padding-left: var(--size-4-1);
+	padding-right: var(--size-4-1);
 }
 
 .sv-subheader {
@@ -1918,6 +1920,23 @@ td.sv-num {
 
 .tabulator .tabulator-footer .tabulator-paginator {
 	color: var(--text-muted);
+}
+
+/* Responsive column collapse (see the `responsiveLayout: "collapse"` table
+   option in view.ts) — the "+" toggle and the title/value list it opens for
+   whichever columns didn't fit at the current width. */
+.tabulator-row .tabulator-responsive-collapse {
+	border-top: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tabulator-row .tabulator-cell .tabulator-responsive-collapse-toggle {
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+}
+
+.tabulator-row .tabulator-cell .tabulator-responsive-collapse-toggle svg {
+	stroke: currentColor;
 }
 
 .sv-research-linked {
