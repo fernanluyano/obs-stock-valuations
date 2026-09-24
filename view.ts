@@ -22,6 +22,7 @@ import {
 } from "tabulator-tables";
 import type { CellComponent, ColumnDefinition } from "tabulator-tables";
 import type StockValuationsPlugin from "./main";
+import { calcDcfGrid, calcGrahamGrid, calcTenCapGrid, DcfInputs, GrahamInputs, TenCapInputs } from "./calculations";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
@@ -147,6 +148,12 @@ function ivMosFormatter(ivField: keyof TableRow): (cell: CellComponent) => strin
 	};
 }
 
+// Index of the value in `values` closest to `target` — used by both
+// sensitivity grids to find which fixed axis tick to treat as "current".
+function nearestIndex(values: number[], target: number): number {
+	return values.reduce((best, v, i) => (Math.abs(v - target) < Math.abs(values[best] - target) ? i : best), 0);
+}
+
 type Screen = "table" | "form" | "docs" | "changelog";
 
 class ConfirmModal extends Modal {
@@ -228,6 +235,17 @@ export class StockValuationsView extends ItemView {
 	private heroPriceEl!: HTMLElement;
 	private mktCapInput!: HTMLInputElement;
 	private charts: Chart[] = [];
+	// The three sensitivity grids (DCF, Graham, Ten Cap) live on the form
+	// screen and are rebuilt on every keystroke (see recalculate()),
+	// separately from `tabulator` below (the ticker table on the table
+	// screen) and `charts` above (only torn down wholesale on a screen
+	// switch) so retyping a field doesn't touch those.
+	private dcfSensitivityTabulator: Tabulator | null = null;
+	private dcfSensitivityWrapEl!: HTMLElement;
+	private grahamSensitivityTabulator: Tabulator | null = null;
+	private grahamSensitivityWrapEl!: HTMLElement;
+	private tenCapSensitivityTabulator: Tabulator | null = null;
+	private tenCapSensitivityWrapEl!: HTMLElement;
 	private tabulator: Tabulator | null = null;
 	private static readonly PAGE_SIZE = 10;
 
@@ -1107,6 +1125,12 @@ export class StockValuationsView extends ItemView {
 	private destroyTabulator(): void {
 		this.tabulator?.destroy();
 		this.tabulator = null;
+		this.dcfSensitivityTabulator?.destroy();
+		this.dcfSensitivityTabulator = null;
+		this.grahamSensitivityTabulator?.destroy();
+		this.grahamSensitivityTabulator = null;
+		this.tenCapSensitivityTabulator?.destroy();
+		this.tenCapSensitivityTabulator = null;
 	}
 
 	// ---------------------------------------------------------------------
@@ -1383,7 +1407,53 @@ export class StockValuationsView extends ItemView {
 		const saveBtn = resultsCol.createEl("button", { text: "Save", cls: "mod-cta sv-insert-btn" });
 		saveBtn.addEventListener("click", () => this.saveValuation());
 
+		// --- Sensitivity grids (own section — not squeezed into the
+		// already-dense sticky Results column above). One shared intro covers
+		// what's true of every grid below (the two highlighted cells, the
+		// "does this method fit?" caveat); each grid's own caption below that
+		// only needs to say which two inputs it varies. ---
+		const sensitivitySection = root.createDiv({ cls: "sv-chart-section" });
+		sensitivitySection.createEl("h3", { text: "Sensitivity" });
+		sensitivitySection.createEl("p", {
+			cls: "sv-chart-caption",
+			text: 'Fair value across a small, fixed range of each method\'s key assumptions, instead of one point estimate. Every grid below marks two cells: the one nearest your actual current inputs, and the one whose value lands closest to today\'s price — that one is roughly what the market is implicitly assuming right now. Only meaningful if the method itself is a good fit for the business being valued — see "Does this method fit?" on the Help & methodology screen (← Back to table, then Help).',
+		});
+
+		this.dcfSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"DCF",
+			"WACC × years 1-5 growth, holding the rest of the DCF inputs steady."
+		);
+		this.grahamSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"Graham",
+			"AAA bond yield × expected EPS growth, holding EPS steady."
+		);
+		this.tenCapSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"Ten Cap",
+			"Maintenance-capex split × how far reported capex might swing from what's on the filing, holding operating cash flow and shares steady."
+		);
+
 		this.recalculate();
+	}
+
+	// Header/caption/legend shell for one sensitivity grid, nested under the
+	// shared "Sensitivity" section above. Returns the (initially empty)
+	// container the caller renders its Tabulator instance into.
+	private renderSensitivityGridShell(parent: HTMLElement, methodLabel: string, caption: string): HTMLElement {
+		const wrap = parent.createDiv({ cls: "sv-sensitivity-grid" });
+		wrap.createEl("h4", { text: `${methodLabel} sensitivity` });
+		wrap.createEl("p", { cls: "sv-chart-caption", text: caption });
+		const legend = wrap.createDiv({ cls: "sv-grid-legend" });
+		const legendItem = (cls: string, text: string) => {
+			const item = legend.createSpan({ cls: "sv-grid-legend-item" });
+			item.createSpan({ cls: `sv-grid-legend-swatch ${cls}` });
+			item.createSpan({ text });
+		};
+		legendItem("sv-grid-legend-current", "Nearest to your current inputs");
+		legendItem("sv-grid-legend-nearest", "Nearest to today's price");
+		return wrap.createDiv();
 	}
 
 	// The bull/base/bear tab strip on the form screen — switches which
@@ -1766,6 +1836,9 @@ export class StockValuationsView extends ItemView {
 		this.scenarios[this.activeScenario].results = this.results;
 		this.mktCapInput.value = formatWithCommas(this.state.mktCap);
 		this.renderResults();
+		this.renderDcfSensitivityGrid();
+		this.renderGrahamSensitivityGrid();
+		this.renderTenCapSensitivityGrid();
 	}
 
 	private renderResults(): void {
@@ -1802,6 +1875,184 @@ export class StockValuationsView extends ItemView {
 			text: `Ten Cap owner-earnings yield: ${formatPercent(r.tenCapYield)}`,
 			cls: "sv-note",
 		});
+	}
+
+	// DCF fair value across a fixed grid: WACC (columns) × growth yrs 1-5
+	// (rows), the two inputs calcDcf is most exposed to — growth6to10 and
+	// terminalGrowth stay fixed at their current form values (see
+	// calcDcfGrid). Rebuilt on every keystroke from recalculate() — its own
+	// Tabulator instance (this.dcfSensitivityTabulator), separate from the
+	// ticker table on the table screen.
+	private renderDcfSensitivityGrid(): void {
+		this.dcfSensitivityTabulator?.destroy();
+
+		const dcfInputs: DcfInputs = {
+			netDebt: this.num("netDebt"),
+			shares: this.num("shares"),
+			growth1to5: this.num("growth1to5"),
+			growth6to10: this.num("growth6to10"),
+			terminalGrowth: this.num("terminalGrowth"),
+			wacc: this.results.wacc,
+			fcf: this.num("fcf"),
+		};
+		const { waccValues, growthValues, grid } = calcDcfGrid(dcfInputs);
+
+		this.dcfSensitivityTabulator = this.buildSensitivityGrid(
+			this.dcfSensitivityWrapEl,
+			growthValues,
+			waccValues,
+			grid,
+			nearestIndex(growthValues, dcfInputs.growth1to5),
+			nearestIndex(waccValues, dcfInputs.wacc),
+			this.num("price"),
+			"Growth (yrs 1-5)",
+			(v) => formatPercent(v * 100, 2),
+			(v) => `WACC ${formatPercent(v * 100, 2)}`
+		);
+	}
+
+	// Graham fair value across a fixed grid: AAA bond yield (columns) ×
+	// expected EPS growth (rows) — the formula's only two judgment calls; eps
+	// stays fixed at its current form value (see calcGrahamGrid). Same
+	// rebuild-on-every-keystroke lifecycle as the DCF grid above.
+	private renderGrahamSensitivityGrid(): void {
+		this.grahamSensitivityTabulator?.destroy();
+
+		const grahamInputs: GrahamInputs = {
+			eps: this.num("eps"),
+			growth: this.num("grahamGrowth"),
+			aaaYield: this.num("aaaYield"),
+		};
+		const { yieldValues, growthValues, grid } = calcGrahamGrid(grahamInputs);
+
+		this.grahamSensitivityTabulator = this.buildSensitivityGrid(
+			this.grahamSensitivityWrapEl,
+			growthValues,
+			yieldValues,
+			grid,
+			nearestIndex(growthValues, grahamInputs.growth),
+			nearestIndex(yieldValues, grahamInputs.aaaYield),
+			this.num("price"),
+			"EPS growth",
+			(v) => formatPercent(v * 100, 2),
+			(v) => `AAA ${formatPercent(v * 100, 2)}`
+		);
+	}
+
+	// Ten Cap fair value across a fixed grid: capex, as a multiplier on the
+	// ticker's own reported capex (columns) × maintenance-capex split (rows)
+	// — the method's real judgment call, crossed with how much reported capex
+	// itself might swing; ocf/shares stay fixed at their current form values
+	// (see calcTenCapGrid). Same rebuild-on-every-keystroke lifecycle as the
+	// other two grids above.
+	private renderTenCapSensitivityGrid(): void {
+		this.tenCapSensitivityTabulator?.destroy();
+
+		const tenCapInputs: TenCapInputs = {
+			ocf: this.num("ocf"),
+			capex: this.num("capex"),
+			mainPct: this.num("mainPct"),
+			shares: this.num("shares"),
+		};
+		const { capexMultipliers, mainPctValues, grid } = calcTenCapGrid(tenCapInputs);
+
+		// Column headers show the actual capex dollar amount each multiplier
+		// implies (in whatever Money scale is currently selected — same
+		// convention as the Capital expenditures field itself), not the bare
+		// multiplier — "80%" on its own doesn't say 80% of what.
+		const moneyDivisor = SCALE_MULTIPLIERS[this.moneyScale];
+		this.tenCapSensitivityTabulator = this.buildSensitivityGrid(
+			this.tenCapSensitivityWrapEl,
+			mainPctValues,
+			capexMultipliers,
+			grid,
+			nearestIndex(mainPctValues, tenCapInputs.mainPct),
+			nearestIndex(capexMultipliers, 1),
+			this.num("price"),
+			"Maintenance %",
+			(v) => formatPercent(v * 100, 2),
+			(mult) => `Capex ${formatCurrency((tenCapInputs.capex * mult) / moneyDivisor, 2)}`
+		);
+	}
+
+	// Shared renderer for all three sensitivity grids: one row per rowValues
+	// entry, one column per colValues entry, cell = grid[ri][ci] (null ->
+	// "—"). Highlights the cell nearest the actual current inputs
+	// (currentRowIdx/currentColIdx) and the cell whose value is closest to
+	// today's price — same two markers, same meaning, for every method.
+	private buildSensitivityGrid(
+		wrapEl: HTMLElement,
+		rowValues: number[],
+		colValues: number[],
+		grid: (number | null)[][],
+		currentRowIdx: number,
+		currentColIdx: number,
+		price: number,
+		rowHeaderTitle: string,
+		rowLabelOf: (v: number) => string,
+		colTitleOf: (v: number) => string
+	): Tabulator {
+		let nearestRi = -1;
+		let nearestCi = -1;
+		if (price > 0) {
+			let minDiff = Infinity;
+			grid.forEach((row, ri) =>
+				row.forEach((iv, ci) => {
+					if (iv === null) return;
+					const diff = Math.abs(iv - price);
+					if (diff < minDiff) {
+						minDiff = diff;
+						nearestRi = ri;
+						nearestCi = ci;
+					}
+				})
+			);
+		}
+
+		interface GridRow {
+			rowLabel: string;
+			ri: number;
+			[colField: string]: string | number;
+		}
+		const data: GridRow[] = rowValues.map((rv, ri) => {
+			const row: GridRow = { rowLabel: rowLabelOf(rv), ri };
+			colValues.forEach((_cv, ci) => {
+				row[`c${ci}`] = grid[ri][ci] ?? NaN;
+			});
+			return row;
+		});
+
+		const cellFormatter = (ci: number) => (cell: CellComponent): string => {
+			const value = cell.getValue() as number;
+			const row = cell.getData() as GridRow;
+			const el = cell.getElement();
+			el.classList.remove("sv-grid-cell-current", "sv-grid-cell-nearest");
+			if (row.ri === currentRowIdx && ci === currentColIdx) el.classList.add("sv-grid-cell-current");
+			if (row.ri === nearestRi && ci === nearestCi) el.classList.add("sv-grid-cell-nearest");
+			return isFinite(value) ? formatCurrency(value, 2) : "—";
+		};
+
+		const columns: ColumnDefinition[] = [
+			{
+				title: rowHeaderTitle,
+				field: "rowLabel",
+				headerSort: false,
+				hozAlign: "left",
+				headerHozAlign: "left",
+				cssClass: "sv-grid-row-label",
+			},
+			...colValues.map(
+				(cv, ci): ColumnDefinition => ({
+					title: colTitleOf(cv),
+					field: `c${ci}`,
+					headerSort: false,
+					hozAlign: "right",
+					formatter: cellFormatter(ci),
+				})
+			),
+		];
+
+		return new Tabulator(wrapEl, { data, columns, layout: "fitColumns" });
 	}
 
 }

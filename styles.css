@@ -2029,6 +2029,86 @@ td.sv-num {
 	width: 100%;
 }
 
+/* Sensitivity grids (DCF, Graham, Ten Cap) — each a small Tabulator instance,
+   not a chart. Highlight styling (outline, not a fill) so it reads clearly
+   against either the pos/neg tint already used elsewhere
+   (.sv-mos-pos/.sv-mos-neg) or a plain background cell. */
+
+.sv-sensitivity-grid {
+	margin-top: var(--size-4-6);
+}
+
+.sv-sensitivity-grid:first-of-type {
+	margin-top: var(--size-4-2);
+}
+
+.sv-sensitivity-grid h4 {
+	font-family: var(--sv-serif);
+	font-size: 1.05rem;
+	margin: 0 0 var(--size-4-2) 0;
+}
+
+.sv-grid-row-label {
+	color: var(--text-muted);
+	font-weight: 600;
+}
+
+.sv-grid-cell-current,
+.sv-grid-cell-nearest {
+	box-shadow: inset 0 0 0 2px var(--sv-grid-highlight);
+	border-radius: var(--radius-s);
+	font-weight: 600;
+}
+
+.sv-grid-cell-current {
+	--sv-grid-highlight: var(--interactive-accent);
+	color: var(--interactive-accent);
+}
+
+.sv-grid-cell-nearest {
+	--sv-grid-highlight: var(--color-yellow, #d4a72c);
+	color: var(--color-yellow, #d4a72c);
+}
+
+/* Both markers land on the same cell when your current inputs already price
+   the stock fairly — keep the accent outline (it's the more specific claim)
+   but blend in a hint of yellow so the coincidence is still visible. */
+.sv-grid-cell-current.sv-grid-cell-nearest {
+	box-shadow:
+		inset 0 0 0 2px var(--interactive-accent),
+		inset 0 0 0 4px var(--color-yellow, #d4a72c);
+}
+
+.sv-grid-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-4);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin: 0 0 var(--size-4-3) 0;
+}
+
+.sv-grid-legend-item {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-2);
+}
+
+.sv-grid-legend-swatch {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border-radius: var(--radius-s);
+}
+
+.sv-grid-legend-current {
+	box-shadow: inset 0 0 0 2px var(--interactive-accent);
+}
+
+.sv-grid-legend-nearest {
+	box-shadow: inset 0 0 0 2px var(--color-yellow, #d4a72c);
+}
+
 .sv-modal-buttons {
 	display: flex;
 	justify-content: flex-end;

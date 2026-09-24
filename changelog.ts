@@ -8,6 +8,12 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.6.0",
+		highlights: [
+			"📊 New sensitivity grids for DCF (WACC × growth yrs 1-5), Graham (AAA yield × EPS growth), and Ten Cap (maintenance-capex split × how far reported capex might swing) — see fair value across a range of assumptions instead of one point estimate, with the cell nearest your current inputs and the cell closest to today's price both marked",
+		],
+	},
+	{
 		version: "0.5.2",
 		highlights: [
 			"📱💻 Polished up the valuations table's layout — columns now size themselves sensibly instead of one stretching oddly wide, on both mobile and desktop",

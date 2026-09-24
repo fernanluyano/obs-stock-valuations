@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	calcDcf,
+	calcDcfGrid,
 	calcGraham,
+	calcGrahamGrid,
 	calcTenCap,
+	calcTenCapGrid,
 	calcWacc,
 	marginOfSafety,
 	ownerEarningsYield,
@@ -118,6 +121,48 @@ describe("calcDcf", () => {
 	});
 });
 
+describe("calcDcfGrid", () => {
+	const baseInputs = {
+		netDebt: 1000,
+		shares: 100,
+		growth1to5: 0.1,
+		growth6to10: 0.05,
+		terminalGrowth: 0.025,
+		wacc: 0.08,
+		fcf: 500,
+	};
+
+	it("computes one calcDcf value per (growth, wacc) cell, matching calcDcf directly", () => {
+		const waccValues = [0.06, 0.1];
+		const growthValues = [0.05, 0.15];
+		const result = calcDcfGrid(baseInputs, waccValues, growthValues);
+
+		expect(result.waccValues).toBe(waccValues);
+		expect(result.growthValues).toBe(growthValues);
+		growthValues.forEach((g, ri) => {
+			waccValues.forEach((w, ci) => {
+				const expected = calcDcf({ ...baseInputs, growth1to5: g, wacc: w });
+				expect(result.grid[ri][ci]).toBeCloseTo(expected as number, 8);
+			});
+		});
+	});
+
+	it("returns null instead of a nonsense value where wacc <= terminalGrowth", () => {
+		const result = calcDcfGrid(baseInputs, [0.02, 0.03, 0.1], [0.05]);
+		// terminalGrowth is 0.025, so the 0.02 and 0.03 columns straddle it.
+		expect(result.grid[0][0]).toBeNull(); // wacc 0.02 <= terminalGrowth 0.025
+		expect(result.grid[0][1]).not.toBeNull(); // wacc 0.03 > terminalGrowth 0.025
+		expect(result.grid[0][2]).not.toBeNull();
+	});
+
+	it("holds growth6to10/terminalGrowth/netDebt/shares/fcf fixed across the grid", () => {
+		const result = calcDcfGrid(baseInputs, [0.1], [0.03, 0.2]);
+		// Two rows, one column: only growth1to5 differs between the two cells,
+		// so the values shouldn't collapse to the same number.
+		expect(result.grid[0][0]).not.toEqual(result.grid[1][0]);
+	});
+});
+
 describe("calcGraham", () => {
 	it("applies the classic Graham formula", () => {
 		// IV = EPS * (8.5 + 2g) * 4.4 / Y
@@ -129,6 +174,37 @@ describe("calcGraham", () => {
 	it("returns NaN when the AAA yield is 0 or negative", () => {
 		expect(calcGraham({ eps: 5, growth: 0.08, aaaYield: 0 })).toBeNaN();
 		expect(calcGraham({ eps: 5, growth: 0.08, aaaYield: -0.01 })).toBeNaN();
+	});
+});
+
+describe("calcGrahamGrid", () => {
+	const baseInputs = { eps: 5, growth: 0.08, aaaYield: 0.044 };
+
+	it("computes one calcGraham value per (growth, yield) cell, matching calcGraham directly", () => {
+		const yieldValues = [0.035, 0.05];
+		const growthValues = [0.05, 0.15];
+		const result = calcGrahamGrid(baseInputs, yieldValues, growthValues);
+
+		expect(result.yieldValues).toBe(yieldValues);
+		expect(result.growthValues).toBe(growthValues);
+		growthValues.forEach((g, ri) => {
+			yieldValues.forEach((y, ci) => {
+				const expected = calcGraham({ ...baseInputs, growth: g, aaaYield: y });
+				expect(result.grid[ri][ci]).toBeCloseTo(expected, 10);
+			});
+		});
+	});
+
+	it("returns null instead of NaN where yield <= 0", () => {
+		const result = calcGrahamGrid(baseInputs, [-0.01, 0, 0.04], [0.05]);
+		expect(result.grid[0][0]).toBeNull();
+		expect(result.grid[0][1]).toBeNull();
+		expect(result.grid[0][2]).not.toBeNull();
+	});
+
+	it("holds eps fixed across the grid — higher growth always means higher fair value", () => {
+		const result = calcGrahamGrid(baseInputs, [0.04], [0.05, 0.2]);
+		expect(result.grid[1][0]!).toBeGreaterThan(result.grid[0][0]!);
 	});
 });
 
@@ -145,6 +221,40 @@ describe("calcTenCap", () => {
 		const result = calcTenCap({ ocf: 1000, capex: 400, mainPct: 0.5, shares: 0 });
 		expect(result.ownerEarnings).toBe(800);
 		expect(result.iv).toBeNaN();
+	});
+});
+
+describe("calcTenCapGrid", () => {
+	const baseInputs = { ocf: 1000, capex: 400, mainPct: 0.5, shares: 100 };
+
+	it("computes one calcTenCap value per (mainPct, capex multiplier) cell, matching calcTenCap directly", () => {
+		const capexMultipliers = [0.8, 1.2];
+		const mainPctValues = [0.2, 0.8];
+		const result = calcTenCapGrid(baseInputs, capexMultipliers, mainPctValues);
+
+		expect(result.capexMultipliers).toBe(capexMultipliers);
+		expect(result.mainPctValues).toBe(mainPctValues);
+		mainPctValues.forEach((mainPct, ri) => {
+			capexMultipliers.forEach((mult, ci) => {
+				const expected = calcTenCap({ ...baseInputs, capex: baseInputs.capex * mult, mainPct }).iv;
+				expect(result.grid[ri][ci]).toBeCloseTo(expected, 10);
+			});
+		});
+	});
+
+	it("holds ocf/shares fixed — a multiplier of 1 matches the reported capex exactly", () => {
+		const result = calcTenCapGrid(baseInputs, [1], [0.5]);
+		expect(result.grid[0][0]).toBeCloseTo(calcTenCap(baseInputs).iv, 10);
+	});
+
+	it("higher maintenance % or higher capex both push fair value down", () => {
+		// mainPct 0 would zero out capex's effect entirely, so use a nonzero
+		// baseline (0.5) to isolate each axis's effect independently.
+		const result = calcTenCapGrid(baseInputs, [0.6, 1.4], [0.5, 1]);
+		// row 0 = mainPct 0.5, row 1 = mainPct 1, both at capex multiplier 0.6
+		expect(result.grid[1][0]).toBeLessThan(result.grid[0][0]);
+		// col 0 = 0.6x capex, col 1 = 1.4x capex, both at mainPct 0.5
+		expect(result.grid[0][1]).toBeLessThan(result.grid[0][0]);
 	});
 });
 
