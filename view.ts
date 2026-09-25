@@ -34,6 +34,7 @@ import { FormState, Results, SavedValuation, Scenario, ScenarioKey } from "./val
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
+import { validateScenarios } from "./scenarioValidation";
 import { ensureFolderExists } from "./noteSync";
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
@@ -234,6 +235,8 @@ export class StockValuationsView extends ItemView {
 	private heroTickerEl!: HTMLElement;
 	private heroPriceEl!: HTMLElement;
 	private mktCapInput!: HTMLInputElement;
+	private saveBtn!: HTMLButtonElement;
+	private validationErrorsEl!: HTMLElement;
 	private charts: Chart[] = [];
 	// The three sensitivity grids (DCF, Graham, Ten Cap) live on the form
 	// screen and are rebuilt on every keystroke (see recalculate()),
@@ -470,6 +473,9 @@ export class StockValuationsView extends ItemView {
 			return;
 		}
 		if (this.warnIfDuplicateTicker()) return;
+		// Save button is disabled whenever updateValidation() finds a violation —
+		// this is just a backstop against a stale disabled state.
+		if (validateScenarios(this.scenarios).length > 0) return;
 		this.state.ticker = ticker;
 		this.recalculate();
 
@@ -1404,8 +1410,9 @@ export class StockValuationsView extends ItemView {
 		resultsCol.createEl("h3", { text: "Summary" });
 		this.resultsEl = resultsCol.createDiv({ cls: "sv-results" });
 
-		const saveBtn = resultsCol.createEl("button", { text: "Save", cls: "mod-cta sv-insert-btn" });
-		saveBtn.addEventListener("click", () => this.saveValuation());
+		this.validationErrorsEl = resultsCol.createDiv({ cls: "sv-validation-errors" });
+		this.saveBtn = resultsCol.createEl("button", { text: "Save", cls: "mod-cta sv-insert-btn" });
+		this.saveBtn.addEventListener("click", () => this.saveValuation());
 
 		// --- Sensitivity grids (own section — not squeezed into the
 		// already-dense sticky Results column above). One shared intro covers
@@ -1839,6 +1846,26 @@ export class StockValuationsView extends ItemView {
 		this.renderDcfSensitivityGrid();
 		this.renderGrahamSensitivityGrid();
 		this.renderTenCapSensitivityGrid();
+		this.updateValidation();
+	}
+
+	// Runs every cross-scenario rule (see scenarioValidation.ts — currently
+	// just bear/base/bull growth ordering, but written to grow) against the
+	// three in-progress scenarios, disabling Save and listing what's wrong
+	// when any rule fails. Called on every keystroke via recalculate(), so
+	// the button's state always matches what's currently on screen.
+	private updateValidation(): void {
+		const errors = validateScenarios(this.scenarios);
+		this.validationErrorsEl.empty();
+		for (const error of errors) {
+			this.validationErrorsEl.createEl("p", { text: error, cls: "sv-validation-error" });
+		}
+		this.saveBtn.disabled = errors.length > 0;
+		if (errors.length > 0) {
+			setTooltip(this.saveBtn, "Fix the highlighted inputs before saving.");
+		} else {
+			this.saveBtn.removeAttribute("aria-label");
+		}
 	}
 
 	private renderResults(): void {
