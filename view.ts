@@ -911,7 +911,7 @@ export class StockValuationsView extends ItemView {
 		});
 
 		const wrap = root.createDiv({ cls: "sv-chart-canvas-wrap" });
-		wrap.style.height = "260px";
+		wrap.setCssStyles({ height: "260px" });
 		const canvas = wrap.createEl("canvas");
 
 		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(root);
@@ -997,7 +997,7 @@ export class StockValuationsView extends ItemView {
 		root.createEl("h3", { text: "Ten Cap yield vs. bond yield" });
 
 		const wrap = root.createDiv({ cls: "sv-chart-canvas-wrap" });
-		wrap.style.height = `${Math.max(180, tickers.length * 32 + 50)}px`;
+		wrap.setCssStyles({ height: `${Math.max(180, tickers.length * 32 + 50)}px` });
 		const canvas = wrap.createEl("canvas");
 
 		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(root);
@@ -1453,10 +1453,10 @@ export class StockValuationsView extends ItemView {
 		section.createEl("h3", { text: "Margin of safety by method" });
 		section.createEl("p", {
 			cls: "sv-chart-caption",
-			text: "Same chart as the overview, scoped to this ticker — Bull/Base/Bear margin of safety for each method, plus the average across all three. Always shows all three cases, regardless of which scenario tab is active. Ten Cap has no scenario-specific input, so its three bars are always equal. Hover a bar for exact numbers and intrinsic value.",
+			text: "Bull/Base/Bear margin of safety for each method, plus the average across all three. Always shows all three cases, regardless of which scenario tab is active. Ten Cap has no scenario-specific input, so its three bars are always equal. Hover a bar for exact numbers and intrinsic value.",
 		});
 		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap" });
-		wrap.style.height = "280px";
+		wrap.setCssStyles({ height: "280px" });
 		return wrap;
 	}
 
@@ -1571,7 +1571,7 @@ export class StockValuationsView extends ItemView {
 		const legendItem = (color: string, text: string) => {
 			const item = legend.createSpan({ cls: "sv-grid-legend-item" });
 			const swatch = item.createSpan({ cls: "sv-grid-legend-swatch" });
-			swatch.style.boxShadow = `inset 0 0 0 2px ${color}`;
+			swatch.setCssStyles({ boxShadow: `inset 0 0 0 2px ${color}` });
 			item.createSpan({ text });
 		};
 		const scenarioColors = this.scenarioColors(wrap);
@@ -2246,19 +2246,20 @@ export class StockValuationsView extends ItemView {
 					radius += 2;
 				}
 				if (isNearest) rings.push(`inset 0 0 0 ${radius}px ${nearestColor}`);
-				el.style.boxShadow = rings.join(", ");
-				el.style.borderRadius = "var(--radius-s)";
-				el.style.fontWeight = "600";
-				el.style.color =
+				const color =
 					scenariosHere.length === 1 && !isNearest
 						? scenarioColors[scenariosHere[0]]
 						: scenariosHere.length === 0 && isNearest
 							? nearestColor
 							: "";
+				el.setCssStyles({
+					boxShadow: rings.join(", "),
+					borderRadius: "var(--radius-s)",
+					fontWeight: "600",
+					color,
+				});
 			} else {
-				el.style.boxShadow = "";
-				el.style.fontWeight = "";
-				el.style.color = "";
+				el.setCssStyles({ boxShadow: "", fontWeight: "", color: "" });
 			}
 
 			return isFinite(value) ? formatCurrency(value, 2) : "—";
