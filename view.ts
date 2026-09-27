@@ -157,6 +157,13 @@ function nearestIndex(values: number[], target: number): number {
 
 type Screen = "table" | "form" | "docs" | "changelog";
 
+// One sensitivity-grid cell coordinate — where a given scenario's "current
+// inputs" marker lands (see buildSensitivityGrid).
+interface GridMarker {
+	row: number;
+	col: number;
+}
+
 class ConfirmModal extends Modal {
 	constructor(
 		app: App,
@@ -234,6 +241,12 @@ export class StockValuationsView extends ItemView {
 	private resultsEl!: HTMLElement;
 	private heroTickerEl!: HTMLElement;
 	private heroPriceEl!: HTMLElement;
+	// Container for the Bull/Base/Bear tab strip, and the two-column
+	// form/results layout below it — both rebuilt in isolation by
+	// switchScenario() (via renderFormBody()) so a tab click never touches
+	// the MoS chart or sensitivity grids, which no longer vary by tab.
+	private scenarioTabsWrapEl!: HTMLElement;
+	private layoutEl!: HTMLElement;
 	private mktCapInput!: HTMLInputElement;
 	private saveBtn!: HTMLButtonElement;
 	private validationErrorsEl!: HTMLElement;
@@ -243,6 +256,17 @@ export class StockValuationsView extends ItemView {
 	// separately from `tabulator` below (the ticker table on the table
 	// screen) and `charts` above (only torn down wholesale on a screen
 	// switch) so retyping a field doesn't touch those.
+	// MoS by method, scoped to the single ticker on the form screen — same
+	// chart as the overview's "Margin of safety by method" (renderMosChart),
+	// but grouped by scenario (Bull/Base/Bear bars per method) instead of by
+	// ticker, since there's only ever one ticker here. Rebuilt on every
+	// keystroke from recalculate(), like the sensitivity grids below, always
+	// reading all three of this.scenarios directly rather than
+	// this.results/this.state (which follow whichever tab is active), so the
+	// chart always shows every case and never changes when the Bull/Base/Bear
+	// tab does.
+	private stockMosChart: Chart | null = null;
+	private stockMosChartWrapEl!: HTMLElement;
 	private dcfSensitivityTabulator: Tabulator | null = null;
 	private dcfSensitivityWrapEl!: HTMLElement;
 	private grahamSensitivityTabulator: Tabulator | null = null;
@@ -393,13 +417,18 @@ export class StockValuationsView extends ItemView {
 
 	// Switches which scenario's fields the form shows/edits. Doesn't touch the
 	// other two scenarios' data — each keeps whatever was last typed into it
-	// until Save, which persists all three together.
+	// until Save, which persists all three together. Rebuilds only the tab
+	// strip and the form/results body (renderFormBody) rather than the whole
+	// screen — the MoS chart and sensitivity grids below always show every
+	// case at once now, so there's nothing in them a tab switch would change.
 	private switchScenario(key: ScenarioKey): void {
 		if (key === this.activeScenario) return;
 		this.activeScenario = key;
 		this.state = this.scenarios[key].state;
 		this.results = this.scenarios[key].results;
-		this.render();
+		this.scenarioTabsWrapEl.empty();
+		this.renderScenarioTabs(this.scenarioTabsWrapEl);
+		this.renderFormBody(this.layoutEl);
 	}
 
 	// Writes a value into the active scenario's state — and, for every field
@@ -1123,9 +1152,31 @@ export class StockValuationsView extends ItemView {
 		};
 	}
 
+	// Per-scenario colors, matching the form's own Bull/Base/Bear tab colors
+	// (see .sv-scenario-tab-*.is-active in styles.css) — shared by the
+	// single-ticker MoS chart and the sensitivity grid markers so "which case"
+	// reads the same way everywhere on the form screen.
+	private scenarioColors(el: HTMLElement): Record<ScenarioKey, string> {
+		const styles = getComputedStyle(el);
+		return {
+			bull: styles.getPropertyValue("--sv-pos").trim() || "#3aa55c",
+			base: styles.getPropertyValue("--interactive-accent").trim() || "#4c8bf5",
+			bear: styles.getPropertyValue("--sv-neg").trim() || "#c2564f",
+		};
+	}
+
+	// Color for the sensitivity grid's "nearest to today's price" marker —
+	// deliberately not one of the scenario colors above, since that marker
+	// isn't tied to any one case.
+	private nearestPriceColor(el: HTMLElement): string {
+		return getComputedStyle(el).getPropertyValue("--color-yellow").trim() || "#d4a72c";
+	}
+
 	private destroyChart(): void {
 		for (const chart of this.charts) chart.destroy();
 		this.charts = [];
+		this.stockMosChart?.destroy();
+		this.stockMosChart = null;
 	}
 
 	private destroyTabulator(): void {
@@ -1312,7 +1363,8 @@ export class StockValuationsView extends ItemView {
 		const heroMain = hero.createDiv({ cls: "sv-hero-main" });
 		this.heroTickerEl = heroMain.createSpan({ cls: "sv-hero-ticker", text: "New valuation" });
 		this.heroPriceEl = heroMain.createSpan({ cls: "sv-hero-price", text: "" });
-		this.renderScenarioTabs(hero);
+		this.scenarioTabsWrapEl = hero.createDiv();
+		this.renderScenarioTabs(this.scenarioTabsWrapEl);
 
 		const unitsRow = root.createDiv({ cls: "sv-units-row" });
 		unitsRow.createSpan({ cls: "sv-units-label", text: "Units" });
@@ -1329,6 +1381,54 @@ export class StockValuationsView extends ItemView {
 		});
 
 		const layout = root.createDiv({ cls: "sv-layout" });
+		this.layoutEl = layout;
+		this.renderFormBody(layout);
+
+		// --- MoS by method (single ticker) — same chart as the overview,
+		// scoped to this ticker, above the sensitivity grids. ---
+		this.stockMosChartWrapEl = this.renderStockMosChartShell(root);
+
+		// --- Sensitivity grids (own section — not squeezed into the
+		// already-dense sticky Results column above). One shared intro covers
+		// what's true of every grid below (the markers, the "does this method
+		// fit?" caveat); each grid's own caption below that only needs to say
+		// which two inputs it varies. ---
+		const sensitivitySection = root.createDiv({ cls: "sv-chart-section" });
+		sensitivitySection.createEl("h3", { text: "Sensitivity" });
+		sensitivitySection.createEl("p", {
+			cls: "sv-chart-caption",
+			text: 'Fair value across a small, fixed range of each method\'s key assumptions, instead of one point estimate. Every grid below marks each case\'s current inputs in its own color (see legend), plus the market-implied cell in yellow; overlapping markers stack as rings. Non-scenario inputs are held at the Base tab\'s values, so grids don\'t change when you switch tabs. Only meaningful if the method itself is a good fit for the business being valued — see "Does this method fit?" on the Help & methodology screen (← Back to table, then Help).',
+		});
+
+		this.dcfSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"DCF",
+			"WACC × years 1-5 growth, holding the rest of the DCF inputs steady."
+		);
+		this.grahamSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"Graham",
+			"AAA bond yield × expected EPS growth, holding EPS steady."
+		);
+		this.tenCapSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"Ten Cap",
+			"Maintenance-capex split × how far reported capex might swing from what's on the filing, holding operating cash flow and shares steady."
+		);
+
+		this.recalculate();
+	}
+
+	// Builds the two-column form body (input fields + sticky Summary panel) —
+	// everything inside `layout` that actually depends on which scenario tab
+	// is active (field values, editable-vs-inherited styling, "Fetch data"
+	// availability, the Summary numbers). Split out from renderForm so
+	// switchScenario() can rebuild just this on a tab click, without tearing
+	// down and rebuilding the MoS chart or sensitivity grids below — those no
+	// longer vary by active tab (they always show every case at once), so
+	// there's nothing in them for a tab switch to redraw.
+	private renderFormBody(layout: HTMLElement): void {
+		layout.empty();
 		const formCol = layout.createDiv({ cls: "sv-form-col" });
 		const resultsCol = layout.createDiv({ cls: "sv-results-col" });
 
@@ -1414,35 +1514,123 @@ export class StockValuationsView extends ItemView {
 		this.saveBtn = resultsCol.createEl("button", { text: "Save", cls: "mod-cta sv-insert-btn" });
 		this.saveBtn.addEventListener("click", () => this.saveValuation());
 
-		// --- Sensitivity grids (own section — not squeezed into the
-		// already-dense sticky Results column above). One shared intro covers
-		// what's true of every grid below (the two highlighted cells, the
-		// "does this method fit?" caveat); each grid's own caption below that
-		// only needs to say which two inputs it varies. ---
-		const sensitivitySection = root.createDiv({ cls: "sv-chart-section" });
-		sensitivitySection.createEl("h3", { text: "Sensitivity" });
-		sensitivitySection.createEl("p", {
+		this.refreshResultsDisplay();
+	}
+
+	// Header/caption shell for the single-ticker MoS-by-method chart above the
+	// sensitivity grids. Returns the (initially empty) canvas-wrap container
+	// renderStockMosChart() draws into.
+	private renderStockMosChartShell(parent: HTMLElement): HTMLElement {
+		const section = parent.createDiv({ cls: "sv-chart-section" });
+		section.createEl("h3", { text: "Margin of safety by method" });
+		section.createEl("p", {
 			cls: "sv-chart-caption",
-			text: 'Fair value across a small, fixed range of each method\'s key assumptions, instead of one point estimate. Every grid below marks two cells: the one nearest your actual current inputs, and the one whose value lands closest to today\'s price — that one is roughly what the market is implicitly assuming right now. Only meaningful if the method itself is a good fit for the business being valued — see "Does this method fit?" on the Help & methodology screen (← Back to table, then Help).',
+			text: "Same chart as the overview, scoped to this ticker — Bull/Base/Bear margin of safety for each method, plus the average across all three. Always shows all three cases, regardless of which scenario tab is active. Ten Cap has no scenario-specific input, so its three bars are always equal. Hover a bar for exact numbers and intrinsic value.",
 		});
+		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap" });
+		wrap.style.height = "280px";
+		return wrap;
+	}
 
-		this.dcfSensitivityWrapEl = this.renderSensitivityGridShell(
-			sensitivitySection,
-			"DCF",
-			"WACC × years 1-5 growth, holding the rest of the DCF inputs steady."
-		);
-		this.grahamSensitivityWrapEl = this.renderSensitivityGridShell(
-			sensitivitySection,
-			"Graham",
-			"AAA bond yield × expected EPS growth, holding EPS steady."
-		);
-		this.tenCapSensitivityWrapEl = this.renderSensitivityGridShell(
-			sensitivitySection,
-			"Ten Cap",
-			"Maintenance-capex split × how far reported capex might swing from what's on the filing, holding operating cash flow and shares steady."
-		);
+	// Rebuilt on every keystroke (see recalculate()) from all three of
+	// this.scenarios (not this.results/this.state, which follow whichever
+	// scenario tab is active) — one grouped set of Bull/Base/Bear bars per
+	// method, so the chart always shows every case at once and never changes
+	// when the Bull/Base/Bear tab does. Categories are methods (DCF/Graham/Ten
+	// Cap/Average) instead of renderMosChart's per-ticker categories, since
+	// there's only one ticker here; scenario is the grouping dimension
+	// instead, colored to match the form's own Bull/Base/Bear tab colors.
+	private renderStockMosChart(): void {
+		this.stockMosChart?.destroy();
+		this.stockMosChart = null;
 
-		this.recalculate();
+		const wrap = this.stockMosChartWrapEl;
+		wrap.empty();
+		const canvas = wrap.createEl("canvas");
+
+		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(wrap);
+		const scenarioColors = this.scenarioColors(wrap);
+
+		const MOS_FLOOR = -100;
+		const clampMos = (v: number) => Math.max(v, MOS_FLOOR);
+		const avgOf = (vals: number[]) => {
+			const finite = vals.filter((v) => isFinite(v));
+			return finite.length ? finite.reduce((a, b) => a + b, 0) / finite.length : NaN;
+		};
+
+		const labels = [...METHODS.map((m) => m.label), "Average"];
+
+		// mosByScenario[key] / ivByScenario[key] are parallel to `labels` —
+		// one entry per method plus one for the average.
+		const mosByScenario: Record<ScenarioKey, number[]> = {} as Record<ScenarioKey, number[]>;
+		const ivByScenario: Record<ScenarioKey, number[]> = {} as Record<ScenarioKey, number[]>;
+		for (const key of SCENARIO_KEYS) {
+			const r = this.scenarios[key].results;
+			const methodMos = METHODS.map((m) => r[m.mosKey]);
+			const methodIv = METHODS.map((m) => r[m.ivKey]);
+			mosByScenario[key] = [...methodMos, avgOf(methodMos)];
+			ivByScenario[key] = [...methodIv, avgOf(methodIv)];
+		}
+
+		const datasets = SCENARIO_KEYS.map((key) => ({
+			label: SCENARIO_LABELS[key],
+			data: mosByScenario[key].map((v) => (isFinite(v) ? clampMos(v) : null)),
+			backgroundColor: scenarioColors[key],
+			borderRadius: 3,
+			categoryPercentage: 0.7,
+		}));
+
+		const allValues = SCENARIO_KEYS.flatMap((key) => mosByScenario[key]).filter((v) => isFinite(v));
+		const maxAbs = allValues.length ? Math.max(...allValues.map((v) => Math.abs(clampMos(v)))) : 0;
+		const axisBound = Math.max(25, Math.ceil(maxAbs / 25) * 25);
+
+		const price = this.num("price");
+		const priceStr = price > 0 ? formatCurrency(price) : "—";
+
+		this.stockMosChart = new Chart(canvas, {
+			type: "bar",
+			data: { labels, datasets },
+			options: {
+				indexAxis: "y",
+				responsive: true,
+				maintainAspectRatio: false,
+				scales: {
+					x: {
+						min: -axisBound,
+						max: axisBound,
+						title: { display: true, text: "Margin of safety (%)", color: mutedColor },
+						grid: {
+							color: (ctx) => (ctx.tick?.value === 0 ? normalColor : borderColor),
+							lineWidth: (ctx) => (ctx.tick?.value === 0 ? 1.5 : 1),
+						},
+						ticks: {
+							color: mutedColor,
+							callback: (v) => (Number(v) === 0 ? "0% (price)" : `${v}%`),
+						},
+					},
+					y: {
+						grid: { display: false },
+						ticks: { color: normalColor },
+					},
+				},
+				plugins: {
+					legend: { position: "top", labels: { color: mutedColor } },
+					tooltip: {
+						callbacks: {
+							label: (ctx) => {
+								const key = SCENARIO_KEYS[ctx.datasetIndex];
+								const idx = ctx.dataIndex;
+								const mos = mosByScenario[key][idx];
+								const iv = ivByScenario[key][idx];
+								const mosStr = isFinite(mos) ? formatPercent(mos) : "—";
+								const ivStr = isFinite(iv) ? formatCurrency(iv) : "—";
+								return `${labels[idx]} (${SCENARIO_LABELS[key]}): ${mosStr} (IV ${ivStr}, Price ${priceStr})`;
+							},
+						},
+					},
+				},
+			},
+		});
 	}
 
 	// Header/caption/legend shell for one sensitivity grid, nested under the
@@ -1453,13 +1641,17 @@ export class StockValuationsView extends ItemView {
 		wrap.createEl("h4", { text: `${methodLabel} sensitivity` });
 		wrap.createEl("p", { cls: "sv-chart-caption", text: caption });
 		const legend = wrap.createDiv({ cls: "sv-grid-legend" });
-		const legendItem = (cls: string, text: string) => {
+		const legendItem = (color: string, text: string) => {
 			const item = legend.createSpan({ cls: "sv-grid-legend-item" });
-			item.createSpan({ cls: `sv-grid-legend-swatch ${cls}` });
+			const swatch = item.createSpan({ cls: "sv-grid-legend-swatch" });
+			swatch.style.boxShadow = `inset 0 0 0 2px ${color}`;
 			item.createSpan({ text });
 		};
-		legendItem("sv-grid-legend-current", "Nearest to your current inputs");
-		legendItem("sv-grid-legend-nearest", "Nearest to today's price");
+		const scenarioColors = this.scenarioColors(wrap);
+		for (const key of SCENARIO_KEYS) {
+			legendItem(scenarioColors[key], `${SCENARIO_LABELS[key]}'s current inputs`);
+		}
+		legendItem(this.nearestPriceColor(wrap), "What the market is implying (nearest to today's price)");
 		return wrap.createDiv();
 	}
 
@@ -1651,6 +1843,14 @@ export class StockValuationsView extends ItemView {
 		return numFromState(this.state, key, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
 	}
 
+	// Like num(), but for a named scenario instead of always the active one —
+	// used by the sensitivity grids, which now read every scenario's inputs at
+	// once regardless of which tab is on screen (see renderDcfSensitivityGrid
+	// etc.).
+	private numOf(key: ScenarioKey, field: keyof FormState): number {
+		return numFromState(this.scenarios[key].state, field, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
+	}
+
 	// A field is "unset" — and so fair game for the API to fill — if it's
 	// blank or literally 0. Anything else is treated as a value the user
 	// already entered on purpose and is never overwritten. This is the one
@@ -1834,6 +2034,12 @@ export class StockValuationsView extends ItemView {
 		new Notice(parts.join(" "), 10000);
 	}
 
+	// Called on every keystroke in the form. Recomputes the active scenario's
+	// results and rebuilds everything derived from the scenarios (the Summary
+	// panel, the MoS chart, the sensitivity grids) — unlike switchScenario(),
+	// which only changes *which* scenario is on screen without changing any
+	// scenario's data, so it skips the chart/grids entirely (see
+	// renderFormBody/switchScenario).
 	private recalculate(): void {
 		// Mutates this.state.mktCap as a side effect — see computeResultsForState.
 		this.results = computeResultsForState(this.state, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
@@ -1841,11 +2047,20 @@ export class StockValuationsView extends ItemView {
 		// (mutated in place above), but results is a fresh object each call —
 		// write it back explicitly so the scenario map stays current.
 		this.scenarios[this.activeScenario].results = this.results;
-		this.mktCapInput.value = formatWithCommas(this.state.mktCap);
-		this.renderResults();
+		this.refreshResultsDisplay();
+		this.renderStockMosChart();
 		this.renderDcfSensitivityGrid();
 		this.renderGrahamSensitivityGrid();
 		this.renderTenCapSensitivityGrid();
+	}
+
+	// Refreshes just the Summary panel + validation state for whichever
+	// scenario is currently active — called after recalculate() rebuilds
+	// this.results, and again at the end of renderFormBody() (which creates a
+	// fresh resultsEl/mktCapInput/validationErrorsEl to populate).
+	private refreshResultsDisplay(): void {
+		this.mktCapInput.value = formatWithCommas(this.state.mktCap);
+		this.renderResults();
 		this.updateValidation();
 	}
 
@@ -1905,32 +2120,46 @@ export class StockValuationsView extends ItemView {
 	}
 
 	// DCF fair value across a fixed grid: WACC (columns) × growth yrs 1-5
-	// (rows), the two inputs calcDcf is most exposed to — growth6to10 and
-	// terminalGrowth stay fixed at their current form values (see
-	// calcDcfGrid). Rebuilt on every keystroke from recalculate() — its own
-	// Tabulator instance (this.dcfSensitivityTabulator), separate from the
-	// ticker table on the table screen.
+	// (rows), the two inputs calcDcf is most exposed to. Every other DCF
+	// input the grid holds fixed (netDebt/shares/growth6to10/terminalGrowth/
+	// fcf) is read from the Base scenario specifically, not whichever tab is
+	// active — WACC and growth6to10/terminalGrowth can otherwise differ by
+	// scenario, and the grid needs one fixed basis so it stays identical
+	// across tab switches (see calcDcfGrid, switchScenario). Rebuilt on every
+	// keystroke from recalculate() — its own Tabulator instance
+	// (this.dcfSensitivityTabulator), separate from the ticker table on the
+	// table screen.
 	private renderDcfSensitivityGrid(): void {
 		this.dcfSensitivityTabulator?.destroy();
 
 		const dcfInputs: DcfInputs = {
-			netDebt: this.num("netDebt"),
-			shares: this.num("shares"),
-			growth1to5: this.num("growth1to5"),
-			growth6to10: this.num("growth6to10"),
-			terminalGrowth: this.num("terminalGrowth"),
-			wacc: this.results.wacc,
-			fcf: this.num("fcf"),
+			netDebt: this.numOf("base", "netDebt"),
+			shares: this.numOf("base", "shares"),
+			growth1to5: this.numOf("base", "growth1to5"),
+			growth6to10: this.numOf("base", "growth6to10"),
+			terminalGrowth: this.numOf("base", "terminalGrowth"),
+			wacc: this.scenarios.base.results.wacc,
+			fcf: this.numOf("base", "fcf"),
 		};
 		const { waccValues, growthValues, grid } = calcDcfGrid(dcfInputs);
+
+		// growth1to5 is scenario-specific, so each case's "current inputs"
+		// marker can land on a different row; WACC depends only on shared
+		// facts, so the column is the same for all three.
+		const currentByScenario: Record<ScenarioKey, GridMarker> = {} as Record<ScenarioKey, GridMarker>;
+		for (const key of SCENARIO_KEYS) {
+			currentByScenario[key] = {
+				row: nearestIndex(growthValues, this.numOf(key, "growth1to5")),
+				col: nearestIndex(waccValues, this.scenarios[key].results.wacc),
+			};
+		}
 
 		this.dcfSensitivityTabulator = this.buildSensitivityGrid(
 			this.dcfSensitivityWrapEl,
 			growthValues,
 			waccValues,
 			grid,
-			nearestIndex(growthValues, dcfInputs.growth1to5),
-			nearestIndex(waccValues, dcfInputs.wacc),
+			currentByScenario,
 			this.num("price"),
 			"Growth (yrs 1-5)",
 			(v) => formatPercent(v * 100, 2),
@@ -1940,25 +2169,34 @@ export class StockValuationsView extends ItemView {
 
 	// Graham fair value across a fixed grid: AAA bond yield (columns) ×
 	// expected EPS growth (rows) — the formula's only two judgment calls; eps
-	// stays fixed at its current form value (see calcGrahamGrid). Same
-	// rebuild-on-every-keystroke lifecycle as the DCF grid above.
+	// (the only other input) is read from Base, same reasoning as the DCF
+	// grid above. Same rebuild-on-every-keystroke lifecycle as the DCF grid.
 	private renderGrahamSensitivityGrid(): void {
 		this.grahamSensitivityTabulator?.destroy();
 
 		const grahamInputs: GrahamInputs = {
-			eps: this.num("eps"),
-			growth: this.num("grahamGrowth"),
-			aaaYield: this.num("aaaYield"),
+			eps: this.numOf("base", "eps"),
+			growth: this.numOf("base", "grahamGrowth"),
+			aaaYield: this.numOf("base", "aaaYield"),
 		};
 		const { yieldValues, growthValues, grid } = calcGrahamGrid(grahamInputs);
+
+		// grahamGrowth is scenario-specific (rows); aaaYield is a shared fact,
+		// so the column is the same for all three.
+		const currentByScenario: Record<ScenarioKey, GridMarker> = {} as Record<ScenarioKey, GridMarker>;
+		for (const key of SCENARIO_KEYS) {
+			currentByScenario[key] = {
+				row: nearestIndex(growthValues, this.numOf(key, "grahamGrowth")),
+				col: nearestIndex(yieldValues, this.numOf(key, "aaaYield")),
+			};
+		}
 
 		this.grahamSensitivityTabulator = this.buildSensitivityGrid(
 			this.grahamSensitivityWrapEl,
 			growthValues,
 			yieldValues,
 			grid,
-			nearestIndex(growthValues, grahamInputs.growth),
-			nearestIndex(yieldValues, grahamInputs.aaaYield),
+			currentByScenario,
 			this.num("price"),
 			"EPS growth",
 			(v) => formatPercent(v * 100, 2),
@@ -1969,19 +2207,27 @@ export class StockValuationsView extends ItemView {
 	// Ten Cap fair value across a fixed grid: capex, as a multiplier on the
 	// ticker's own reported capex (columns) × maintenance-capex split (rows)
 	// — the method's real judgment call, crossed with how much reported capex
-	// itself might swing; ocf/shares stay fixed at their current form values
-	// (see calcTenCapGrid). Same rebuild-on-every-keystroke lifecycle as the
-	// other two grids above.
+	// itself might swing; ocf/shares (read from Base, though shared facts
+	// make this the same as any scenario) stay fixed. Ten Cap has no
+	// scenario-specific input at all, so all three cases' markers always
+	// coincide on the same cell. Same rebuild-on-every-keystroke lifecycle as
+	// the other two grids above.
 	private renderTenCapSensitivityGrid(): void {
 		this.tenCapSensitivityTabulator?.destroy();
 
 		const tenCapInputs: TenCapInputs = {
-			ocf: this.num("ocf"),
-			capex: this.num("capex"),
-			mainPct: this.num("mainPct"),
-			shares: this.num("shares"),
+			ocf: this.numOf("base", "ocf"),
+			capex: this.numOf("base", "capex"),
+			mainPct: this.numOf("base", "mainPct"),
+			shares: this.numOf("base", "shares"),
 		};
 		const { capexMultipliers, mainPctValues, grid } = calcTenCapGrid(tenCapInputs);
+
+		const marker: GridMarker = {
+			row: nearestIndex(mainPctValues, tenCapInputs.mainPct),
+			col: nearestIndex(capexMultipliers, 1),
+		};
+		const currentByScenario: Record<ScenarioKey, GridMarker> = { bull: marker, base: marker, bear: marker };
 
 		// Column headers show the actual capex dollar amount each multiplier
 		// implies (in whatever Money scale is currently selected — same
@@ -1993,8 +2239,7 @@ export class StockValuationsView extends ItemView {
 			mainPctValues,
 			capexMultipliers,
 			grid,
-			nearestIndex(mainPctValues, tenCapInputs.mainPct),
-			nearestIndex(capexMultipliers, 1),
+			currentByScenario,
 			this.num("price"),
 			"Maintenance %",
 			(v) => formatPercent(v * 100, 2),
@@ -2004,16 +2249,19 @@ export class StockValuationsView extends ItemView {
 
 	// Shared renderer for all three sensitivity grids: one row per rowValues
 	// entry, one column per colValues entry, cell = grid[ri][ci] (null ->
-	// "—"). Highlights the cell nearest the actual current inputs
-	// (currentRowIdx/currentColIdx) and the cell whose value is closest to
-	// today's price — same two markers, same meaning, for every method.
+	// "—"). Marks, in that case's own color, whichever cell is nearest each
+	// scenario's actual current inputs (currentByScenario — all three always
+	// shown, unlike the old single "current inputs" marker), plus the cell
+	// whose value is closest to today's price in a color of its own. When
+	// several markers land on the same cell, each draws its own inset ring at
+	// a different radius so every color stays visible rather than one
+	// overwriting another.
 	private buildSensitivityGrid(
 		wrapEl: HTMLElement,
 		rowValues: number[],
 		colValues: number[],
 		grid: (number | null)[][],
-		currentRowIdx: number,
-		currentColIdx: number,
+		currentByScenario: Record<ScenarioKey, GridMarker>,
 		price: number,
 		rowHeaderTitle: string,
 		rowLabelOf: (v: number) => string,
@@ -2036,6 +2284,9 @@ export class StockValuationsView extends ItemView {
 			);
 		}
 
+		const scenarioColors = this.scenarioColors(wrapEl);
+		const nearestColor = this.nearestPriceColor(wrapEl);
+
 		interface GridRow {
 			rowLabel: string;
 			ri: number;
@@ -2053,9 +2304,35 @@ export class StockValuationsView extends ItemView {
 			const value = cell.getValue() as number;
 			const row = cell.getData() as GridRow;
 			const el = cell.getElement();
-			el.classList.remove("sv-grid-cell-current", "sv-grid-cell-nearest");
-			if (row.ri === currentRowIdx && ci === currentColIdx) el.classList.add("sv-grid-cell-current");
-			if (row.ri === nearestRi && ci === nearestCi) el.classList.add("sv-grid-cell-nearest");
+
+			const scenariosHere = SCENARIO_KEYS.filter(
+				(key) => currentByScenario[key].row === row.ri && currentByScenario[key].col === ci
+			);
+			const isNearest = row.ri === nearestRi && ci === nearestCi;
+
+			if (scenariosHere.length > 0 || isNearest) {
+				const rings: string[] = [];
+				let radius = 2;
+				for (const key of scenariosHere) {
+					rings.push(`inset 0 0 0 ${radius}px ${scenarioColors[key]}`);
+					radius += 2;
+				}
+				if (isNearest) rings.push(`inset 0 0 0 ${radius}px ${nearestColor}`);
+				el.style.boxShadow = rings.join(", ");
+				el.style.borderRadius = "var(--radius-s)";
+				el.style.fontWeight = "600";
+				el.style.color =
+					scenariosHere.length === 1 && !isNearest
+						? scenarioColors[scenariosHere[0]]
+						: scenariosHere.length === 0 && isNearest
+							? nearestColor
+							: "";
+			} else {
+				el.style.boxShadow = "";
+				el.style.fontWeight = "";
+				el.style.color = "";
+			}
+
 			return isFinite(value) ? formatCurrency(value, 2) : "—";
 		};
 
