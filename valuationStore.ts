@@ -58,6 +58,14 @@ export interface SavedValuation {
 	sharesScale: ScaleUnit;
 	updatedAt: number; // epoch ms
 
+	// epoch ms of the last time this ticker's price was actually confirmed
+	// current — set only by the table's "Refresh prices" action, never by an
+	// ordinary form save (which may not have touched the price at all).
+	// Optional so older/never-refreshed records skip a schema migration;
+	// missing means "never refreshed", not "assume it's fine" — readers treat
+	// it as infinitely stale rather than falling back to updatedAt.
+	lastPriceRefreshAt?: number;
+
 	// Vault path to a linked research note, set only through the table's
 	// Research column (never the form) — independent of ticker naming, and
 	// nothing about the note's contents or format is read or assumed.

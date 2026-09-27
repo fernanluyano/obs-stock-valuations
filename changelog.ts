@@ -8,6 +8,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.7.0",
+		highlights: [
+			"📊 The ticker form now has its own margin-of-safety chart — Bull/Base/Bear bars per method, always showing all three cases at once instead of just whichever scenario tab is active",
+			"🎯 Sensitivity grids now mark all three scenarios' current inputs at once, each in its own color (stacking as rings when they land on the same cell), instead of only the active tab's",
+			"📉 Swapped the table's old per-ticker margin-of-safety chart (now redundant with the ticker form's own chart and the table's DCF/Graham/Ten Cap columns) for a margin-of-safety distribution chart — how many tickers fall into each range, broken out by method — shown side by side with the Ten Cap yield spread chart",
+			"⏰ New stale-price tracking — a badge counts tickers that haven't been refreshed in 7+ days (click it to sort oldest first), and their Price cell is highlighted the same way",
+		],
+	},
+	{
 		version: "0.6.0",
 		highlights: [
 			"📊 New sensitivity grids for DCF (WACC × growth yrs 1-5), Graham (AAA yield × EPS growth), and Ten Cap (maintenance-capex split × how far reported capex might swing) — see fair value across a range of assumptions instead of one point estimate, with the cell nearest your current inputs and the cell closest to today's price both marked",

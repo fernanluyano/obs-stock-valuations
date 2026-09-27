@@ -2027,6 +2027,29 @@ td.sv-num {
 	margin: 0 0 var(--size-4-2) 0;
 }
 
+/* Two chart columns side by side below the table — the row itself carries
+   the divider that .sv-chart-section used to own alone, so neither column
+   duplicates it. Wraps to stacked on narrow widths. */
+.sv-chart-row {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-4-8);
+	flex-wrap: wrap;
+	margin-top: var(--size-4-8);
+	padding-top: var(--size-4-6);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.sv-chart-col {
+	flex: 1 1 320px;
+	min-width: 280px;
+}
+
+.sv-chart-col h3 {
+	font-family: var(--sv-serif);
+	margin: 0 0 var(--size-4-2) 0;
+}
+
 .sv-chart-caption {
 	font-size: var(--font-ui-smaller);
 	color: var(--text-faint);
@@ -2119,6 +2142,14 @@ td.sv-num {
 
 .sv-docs-btn-icon {
 	display: inline-flex;
+}
+
+.sv-stale-btn {
+	color: var(--color-yellow);
+}
+
+.sv-price-stale {
+	color: var(--color-yellow);
 }
 
 .sv-docs {

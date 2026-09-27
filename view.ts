@@ -53,7 +53,6 @@ const METHODS = [
 	{ label: "Graham", color: "#f2a541", mosKey: "grahamMos", ivKey: "grahamIv" },
 	{ label: "Ten Cap", color: "#8d6fd1", mosKey: "tenCapMos", ivKey: "tenCapIv" },
 ] as const satisfies { label: string; color: string; mosKey: keyof Results; ivKey: keyof Results }[];
-const AVERAGE_COLOR = "#94a3b8";
 
 // Display order for the scenario tabs/selector — optimistic to pessimistic,
 // left to right.
@@ -104,6 +103,10 @@ interface TableRow {
 	grahamBullMos: number;
 	price: number;
 	updatedAt: number;
+	// 0 (sorts/reads as "infinitely stale") for records never explicitly
+	// refreshed via "Refresh prices" — never falls back to updatedAt, since a
+	// recent edit doesn't mean the price itself was confirmed current.
+	lastPriceRefreshAt: number;
 	researchNotePath?: string;
 }
 
@@ -130,6 +133,7 @@ function buildTableRow(ticker: string, saved: SavedValuation): TableRow {
 		grahamBullMos: bull.results.grahamMos,
 		price: parseFloat(base.state.price) || 0,
 		updatedAt: saved.updatedAt,
+		lastPriceRefreshAt: saved.lastPriceRefreshAt ?? 0,
 		researchNotePath: saved.researchNotePath,
 	};
 }
@@ -256,11 +260,10 @@ export class StockValuationsView extends ItemView {
 	// separately from `tabulator` below (the ticker table on the table
 	// screen) and `charts` above (only torn down wholesale on a screen
 	// switch) so retyping a field doesn't touch those.
-	// MoS by method, scoped to the single ticker on the form screen — same
-	// chart as the overview's "Margin of safety by method" (renderMosChart),
-	// but grouped by scenario (Bull/Base/Bear bars per method) instead of by
-	// ticker, since there's only ever one ticker here. Rebuilt on every
-	// keystroke from recalculate(), like the sensitivity grids below, always
+	// MoS by method, scoped to the single ticker on the form screen — grouped
+	// by scenario (Bull/Base/Bear bars per method) rather than by ticker,
+	// since there's only ever one ticker here. Rebuilt on every keystroke
+	// from recalculate(), like the sensitivity grids below, always
 	// reading all three of this.scenarios directly rather than
 	// this.results/this.state (which follow whichever tab is active), so the
 	// chart always shows every case and never changes when the Bull/Base/Bear
@@ -514,6 +517,11 @@ export class StockValuationsView extends ItemView {
 		const previousLink = this.originalTicker
 			? this.plugin.valuations[this.originalTicker]?.researchNotePath
 			: undefined;
+		// Carried forward, not reset here — an ordinary form save doesn't
+		// guarantee the price was actually refreshed, only refreshAllPrices does.
+		const previousPriceRefresh = this.originalTicker
+			? this.plugin.valuations[this.originalTicker]?.lastPriceRefreshAt
+			: undefined;
 
 		// The record is keyed by one ticker — every scenario must agree on it,
 		// even though only one tab is on screen when Save is clicked. Results
@@ -541,6 +549,7 @@ export class StockValuationsView extends ItemView {
 			updatedAt: Date.now(),
 		};
 		if (previousLink) record.researchNotePath = previousLink;
+		if (previousPriceRefresh) record.lastPriceRefreshAt = previousPriceRefresh;
 		this.plugin.valuations[ticker] = record;
 		void this.plugin.saveValuations();
 		new Notice(`Saved ${ticker}.`);
@@ -565,6 +574,30 @@ export class StockValuationsView extends ItemView {
 		docsBtn.addEventListener("click", () => this.openDocs());
 
 		const tickers = Object.keys(this.plugin.valuations);
+
+		// Valuations don't update themselves when the market moves — flag
+		// whichever tickers haven't had even a price refresh in a while, since
+		// those MoS numbers are quietly drifting out of date. A ticker that's
+		// never gone through "Refresh prices" has no confirmed-fresh price at
+		// all, no matter how recently it was saved/edited — treat missing
+		// lastPriceRefreshAt as infinitely stale (epoch 0) rather than
+		// guessing from updatedAt, so it can't be masked by a recent edit.
+		// Clicking sorts the table oldest-first (missing ones land first too),
+		// so the badge stays useful even once you've acted on part of it.
+		const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+		const lastKnownFreshAt = (t: string) => this.plugin.valuations[t].lastPriceRefreshAt ?? 0;
+		const staleCount = tickers.filter((t) => Date.now() - lastKnownFreshAt(t) > STALE_MS).length;
+		const staleBtn = headerActions.createEl("button", { cls: "sv-docs-btn sv-stale-btn" });
+		setIcon(staleBtn.createSpan({ cls: "sv-docs-btn-icon" }), "alert-triangle");
+		staleBtn.createSpan({ text: `${staleCount} stale` });
+		setTooltip(
+			staleBtn,
+			`${staleCount} ticker${staleCount === 1 ? "" : "s"} haven't had a price refresh in 7+ days — click to sort oldest first`
+		);
+		staleBtn.toggleClass("sv-hidden", staleCount === 0);
+		staleBtn.addEventListener("click", () => {
+			this.tabulator?.setSort("lastPriceRefreshAt", "asc");
+		});
 
 		const refreshBtn = headerActions.createEl("button", { cls: "sv-docs-btn mod-cta" });
 		const refreshIcon = refreshBtn.createSpan({ cls: "sv-docs-btn-icon" });
@@ -683,7 +716,14 @@ export class StockValuationsView extends ItemView {
 			{
 				title: "Price",
 				field: "price",
-				formatter: (cell) => formatCurrency(cell.getValue() as number),
+				formatter: (cell) => {
+					const row = cell.getData() as TableRow;
+					const el = cell.getElement();
+					const stale = Date.now() - row.lastPriceRefreshAt > STALE_MS;
+					el.classList.toggle("sv-price-stale", stale);
+					if (stale) setTooltip(el, "Not refreshed in 7+ days — click “Refresh prices” above");
+					return formatCurrency(cell.getValue() as number);
+				},
 				cssClass: "sv-num",
 				responsive: 1,
 			},
@@ -694,6 +734,15 @@ export class StockValuationsView extends ItemView {
 				formatter: (cell) => window.moment(cell.getValue() as number).format("YYYY-MM-DD"),
 				cssClass: "sv-num sv-updated-cell",
 				responsive: 2,
+			},
+			// Not shown as its own column (the "Updated" column above already
+			// covers last-edit date) — kept in the column list only so the
+			// stale-price badge can sort by it.
+			{
+				title: "Price refreshed",
+				field: "lastPriceRefreshAt",
+				sorter: "number",
+				visible: false,
 			},
 		];
 		if (showResearch) {
@@ -723,8 +772,12 @@ export class StockValuationsView extends ItemView {
 			this.destroyChart();
 			chartsWrap.empty();
 			const activeTickers = (this.tabulator?.getData("visible") ?? []).map((r) => (r as TableRow).ticker);
-			this.renderMosChart(chartsWrap, activeTickers);
-			this.renderYieldSpreadChart(chartsWrap, activeTickers);
+			// Distribution is a compact overview and Ten Cap yield is a taller
+			// per-ticker breakdown — side by side makes better use of width
+			// than stacking two sections of very different heft.
+			const row = chartsWrap.createDiv({ cls: "sv-chart-row" });
+			this.renderMosDistributionChart(row.createDiv({ cls: "sv-chart-col" }), activeTickers);
+			this.renderYieldSpreadChart(row.createDiv({ cls: "sv-chart-col" }), activeTickers);
 		};
 
 		this.tabulator = new Tabulator(tableEl, {
@@ -842,160 +895,77 @@ export class StockValuationsView extends ItemView {
 	};
 
 	// ---------------------------------------------------------------------
-	// Standalone section below the table: one horizontal bar group per
-	// ticker, one plain bar per method (DCF/Graham/Ten Cap MoS%) anchored at
-	// 0 through Base, plus a fourth bar for the ticker's average MoS across
-	// the three. A thin whisker (min/max line with end caps) overlays the bar
-	// showing the Bear-to-Bull spread when the scenarios disagree; when they
-	// agree there's nothing to span, so the whisker just doesn't draw — the
-	// bar itself is unaffected either way, unlike the old floating-range
-	// design where "no spread" meant the bar itself vanished.
+	// Standalone section: how many tickers on this page fall into each
+	// Base-MoS range, broken out per method (DCF/Graham/Ten Cap don't move
+	// together, so blending them into one number would hide real
+	// disagreement) — replaces the old per-ticker MoS-by-method chart (now
+	// redundant with the table's own DCF/Graham/Ten Cap columns) with a
+	// shape-of-the-list view: is the list skewing cheap or expensive right
+	// now, at a glance, rather than ticker by ticker.
 	// ---------------------------------------------------------------------
-	private renderMosChart(root: HTMLElement, tickers: string[]): void {
-		const section = root.createDiv({ cls: "sv-chart-section" });
-		section.createEl("h3", { text: "Margin of safety by method" });
-		section.createEl("p", {
+	private renderMosDistributionChart(root: HTMLElement, tickers: string[]): void {
+		root.createEl("h3", { text: "Margin of safety distribution" });
+		root.createEl("p", {
 			cls: "sv-chart-caption",
-			text: "Bars show Base margin of safety by method. A thin whisker marks the Bear-to-Bull spread where the calculator's scenarios diverge; no whisker means that ticker's Bull/Bear tabs still match Base. Hover any bar for exact numbers and intrinsic value.",
+			text: "How many tickers fall into each range of Base margin of safety, one bar per method. Hover a bar to see which tickers.",
 		});
 
-		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap" });
-		wrap.style.height = `${Math.max(220, tickers.length * 56 + 60)}px`;
+		const wrap = root.createDiv({ cls: "sv-chart-canvas-wrap" });
+		wrap.style.height = "260px";
 		const canvas = wrap.createEl("canvas");
 
 		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(root);
 
-		// Clamp the floor to -100% so a single wildly negative MOS (e.g. a
-		// method dividing by a near-zero intrinsic value) doesn't blow out the
-		// axis scale and squash every other bar. The tooltip still reports the
-		// true, uncapped value.
-		const MOS_FLOOR = -100;
-		const clampMos = (v: number) => Math.max(v, MOS_FLOOR);
-		const avg = (vals: number[]) => vals.reduce((a, b) => a + b, 0) / vals.length;
-
-		const datasets = METHODS.map((m) => ({
-			label: m.label,
-			data: tickers.map((t): number | null => {
-				const v = this.plugin.valuations[t].scenarios.base.results[m.mosKey];
-				return isFinite(v) ? clampMos(v) : null;
-			}),
-			backgroundColor: m.color,
-			borderRadius: 3,
-			categoryPercentage: 0.65,
-		}));
-
-		const averageBar = {
-			label: "Average",
-			data: tickers.map((t): number | null => {
-				const vals = METHODS.map((m) => this.plugin.valuations[t].scenarios.base.results[m.mosKey]).filter(
-					(v) => isFinite(v)
-				);
-				return vals.length ? clampMos(avg(vals)) : null;
-			}),
-			backgroundColor: AVERAGE_COLOR,
-			borderRadius: 3,
-			categoryPercentage: 0.65,
-		};
-
-		const allDatasets = [...datasets, averageBar];
-
-		// Bear-to-Bull spread per bar, parallel to allDatasets — used only to
-		// draw the whisker below, never as bar data itself. null wherever
-		// there's no spread to show (Bear === Bull, e.g. Ten Cap always, or
-		// any method whose Bull/Bear tabs still match).
-		const whiskerOf = (bearVal: number, bullVal: number): [number, number] | null => {
-			if (!isFinite(bearVal) || !isFinite(bullVal) || bearVal === bullVal) return null;
-			return [clampMos(Math.min(bearVal, bullVal)), clampMos(Math.max(bearVal, bullVal))];
-		};
-		const whiskersByDataset: ([number, number] | null)[][] = [
-			...METHODS.map((m) =>
-				tickers.map((t) => {
-					const { bear, bull } = this.plugin.valuations[t].scenarios;
-					return whiskerOf(bear.results[m.mosKey], bull.results[m.mosKey]);
-				})
-			),
-			tickers.map((t) => {
-				const { bear, bull } = this.plugin.valuations[t].scenarios;
-				const bearVals = METHODS.map((m) => bear.results[m.mosKey]).filter((v) => isFinite(v));
-				const bullVals = METHODS.map((m) => bull.results[m.mosKey]).filter((v) => isFinite(v));
-				if (bearVals.length === 0 || bullVals.length === 0) return null;
-				return whiskerOf(avg(bearVals), avg(bullVals));
-			}),
+		// Fixed, symmetric 25pp-wide buckets — simple and legible for a
+		// watchlist-sized list; not worth making configurable.
+		const BUCKETS: { label: string; min: number; max: number }[] = [
+			{ label: "< -50%", min: -Infinity, max: -50 },
+			{ label: "-50 to -25%", min: -50, max: -25 },
+			{ label: "-25 to 0%", min: -25, max: 0 },
+			{ label: "0 to 25%", min: 0, max: 25 },
+			{ label: "25 to 50%", min: 25, max: 50 },
+			{ label: "> 50%", min: 50, max: Infinity },
 		];
-
-		// Draws the Bear-to-Bull whisker over a bar: a horizontal line with
-		// small vertical end caps, using the bar's own rendered geometry so
-		// it's pixel-aligned regardless of chart layout.
-		const scenarioWhiskerPlugin = {
-			id: "scenarioWhisker",
-			afterDatasetsDraw: (chart: Chart) => {
-				const { ctx } = chart;
-				const xScale = chart.scales.x;
-				if (!xScale) return;
-				chart.data.datasets.forEach((_dataset, datasetIndex) => {
-					const meta = chart.getDatasetMeta(datasetIndex);
-					const whiskers = whiskersByDataset[datasetIndex];
-					meta.data.forEach((element, index) => {
-						const whisker = whiskers?.[index];
-						if (!whisker) return;
-						const [lo, hi] = whisker;
-						const { y, height } = element.getProps(["y", "height"], true) as { y: number; height: number };
-						const x0 = xScale.getPixelForValue(lo);
-						const x1 = xScale.getPixelForValue(hi);
-						const capHalf = height / 2 + 2;
-						ctx.save();
-						ctx.strokeStyle = normalColor;
-						ctx.lineWidth = 2;
-						ctx.beginPath();
-						ctx.moveTo(x0, y);
-						ctx.lineTo(x1, y);
-						ctx.moveTo(x0, y - capHalf);
-						ctx.lineTo(x0, y + capHalf);
-						ctx.moveTo(x1, y - capHalf);
-						ctx.lineTo(x1, y + capHalf);
-						ctx.stroke();
-						ctx.restore();
-					});
-				});
-			},
+		const bucketIndexOf = (v: number) => {
+			const i = BUCKETS.findIndex((b) => v >= b.min && v < b.max);
+			return i === -1 ? BUCKETS.length - 1 : i;
 		};
 
-		// Force a symmetric axis around 0 — otherwise Chart.js auto-scales to
-		// the data's actual min/max, which shifts 0 off-center (and shifts the
-		// tick labels) depending on which tickers happen to be on screen.
-		// Includes whiskersByDataset so a Bear/Bull spread that reaches
-		// further than Base still fits on screen.
-		const allValues = [...allDatasets.flatMap((d) => d.data), ...whiskersByDataset.flat()]
-			.filter((v): v is number | [number, number] => v !== null)
-			.flatMap((v) => (Array.isArray(v) ? v : [v]));
-		const maxAbs = allValues.length ? Math.max(...allValues.map(Math.abs)) : 0;
-		const axisBound = Math.max(25, Math.ceil(maxAbs / 25) * 25);
+		// tickersByMethodBucket[method][bucket] = tickers landing there — kept
+		// per method (not merged) since a ticker can be cheap by one method
+		// and expensive by another; the tooltip and bar heights both read off
+		// this directly, never an average across methods.
+		const tickersByMethodBucket: string[][][] = METHODS.map(() => BUCKETS.map(() => []));
+		for (const t of tickers) {
+			const { base } = this.plugin.valuations[t].scenarios;
+			METHODS.forEach((m, methodIndex) => {
+				const v = base.results[m.mosKey];
+				if (!isFinite(v)) return;
+				tickersByMethodBucket[methodIndex][bucketIndexOf(v)].push(t);
+			});
+		}
 
 		this.charts.push(
 			new Chart(canvas, {
 				type: "bar",
-				data: { labels: tickers, datasets: allDatasets },
+				data: {
+					labels: BUCKETS.map((b) => b.label),
+					datasets: METHODS.map((m, methodIndex) => ({
+						label: m.label,
+						data: tickersByMethodBucket[methodIndex].map((ts) => ts.length),
+						backgroundColor: m.color,
+						borderRadius: 3,
+					})),
+				},
 				options: {
-					indexAxis: "y",
 					responsive: true,
 					maintainAspectRatio: false,
 					scales: {
-						x: {
-							min: -axisBound,
-							max: axisBound,
-							title: { display: true, text: "Margin of safety (%)", color: mutedColor },
-							grid: {
-								color: (ctx) => (ctx.tick?.value === 0 ? normalColor : borderColor),
-								lineWidth: (ctx) => (ctx.tick?.value === 0 ? 1.5 : 1),
-							},
-							ticks: {
-								color: mutedColor,
-								callback: (v) => (Number(v) === 0 ? "0% (price)" : `${v}%`),
-							},
-						},
+						x: { grid: { display: false }, ticks: { color: normalColor } },
 						y: {
-							grid: { display: false },
-							ticks: { color: normalColor },
+							beginAtZero: true,
+							ticks: { color: mutedColor, precision: 0 },
+							grid: { color: borderColor },
 						},
 					},
 					plugins: {
@@ -1003,54 +973,13 @@ export class StockValuationsView extends ItemView {
 						tooltip: {
 							callbacks: {
 								label: (ctx) => {
-									const ticker = tickers[ctx.dataIndex];
-									const { base, bear, bull } = this.plugin.valuations[ticker].scenarios;
-									const price = parseFloat(base.state.price);
-									const priceStr = isFinite(price) ? formatCurrency(price) : "—";
-
-									let baseMos: number | undefined;
-									let bearMos: number | undefined;
-									let bullMos: number | undefined;
-									let baseIv: number | undefined;
-									let bearIv: number | undefined;
-									let bullIv: number | undefined;
-									if (ctx.datasetIndex < METHODS.length) {
-										const m = METHODS[ctx.datasetIndex];
-										baseMos = base.results[m.mosKey];
-										bearMos = bear.results[m.mosKey];
-										bullMos = bull.results[m.mosKey];
-										baseIv = base.results[m.ivKey];
-										bearIv = bear.results[m.ivKey];
-										bullIv = bull.results[m.ivKey];
-									} else {
-										const avgFinite = (vals: number[]) =>
-											vals.length ? avg(vals) : undefined;
-										baseMos = avgFinite(METHODS.map((m) => base.results[m.mosKey]).filter((v) => isFinite(v)));
-										bearMos = avgFinite(METHODS.map((m) => bear.results[m.mosKey]).filter((v) => isFinite(v)));
-										bullMos = avgFinite(METHODS.map((m) => bull.results[m.mosKey]).filter((v) => isFinite(v)));
-										baseIv = avgFinite(METHODS.map((m) => base.results[m.ivKey]).filter((v) => isFinite(v)));
-										bearIv = avgFinite(METHODS.map((m) => bear.results[m.ivKey]).filter((v) => isFinite(v)));
-										bullIv = avgFinite(METHODS.map((m) => bull.results[m.ivKey]).filter((v) => isFinite(v)));
-									}
-									const pct = (v: number | undefined) =>
-										v !== undefined && isFinite(v) ? formatPercent(v) : "—";
-									const cur = (v: number | undefined) =>
-										v !== undefined && isFinite(v) ? formatCurrency(v) : "—";
-
-									if (bearMos === bullMos) {
-										return `${ctx.dataset.label}: ${pct(baseMos)} (IV ${cur(baseIv)}, Price ${priceStr})`;
-									}
-									return [
-										`${ctx.dataset.label}: Base ${pct(baseMos)} (IV ${cur(baseIv)})`,
-										`Bear ${pct(bearMos)} (IV ${cur(bearIv)}) · Bull ${pct(bullMos)} (IV ${cur(bullIv)})`,
-										`Price ${priceStr}`,
-									];
+									const ts = tickersByMethodBucket[ctx.datasetIndex][ctx.dataIndex];
+									return `${ctx.dataset.label}: ${ts.length ? ts.join(", ") : "none"}`;
 								},
 							},
 						},
 					},
 				},
-				plugins: [scenarioWhiskerPlugin],
 			})
 		);
 	}
@@ -1065,10 +994,9 @@ export class StockValuationsView extends ItemView {
 	// ---------------------------------------------------------------------
 
 	private renderYieldSpreadChart(root: HTMLElement, tickers: string[]): void {
-		const section = root.createDiv({ cls: "sv-chart-section" });
-		section.createEl("h3", { text: "Ten Cap yield vs. bond yield" });
+		root.createEl("h3", { text: "Ten Cap yield vs. bond yield" });
 
-		const wrap = section.createDiv({ cls: "sv-chart-canvas-wrap" });
+		const wrap = root.createDiv({ cls: "sv-chart-canvas-wrap" });
 		wrap.style.height = `${Math.max(180, tickers.length * 32 + 50)}px`;
 		const canvas = wrap.createEl("canvas");
 
@@ -1537,9 +1465,8 @@ export class StockValuationsView extends ItemView {
 	// scenario tab is active) — one grouped set of Bull/Base/Bear bars per
 	// method, so the chart always shows every case at once and never changes
 	// when the Bull/Base/Bear tab does. Categories are methods (DCF/Graham/Ten
-	// Cap/Average) instead of renderMosChart's per-ticker categories, since
-	// there's only one ticker here; scenario is the grouping dimension
-	// instead, colored to match the form's own Bull/Base/Bear tab colors.
+	// Cap/Average); scenario is the grouping dimension, colored to match the
+	// form's own Bull/Base/Bear tab colors.
 	private renderStockMosChart(): void {
 		this.stockMosChart?.destroy();
 		this.stockMosChart = null;
@@ -2016,6 +1943,7 @@ export class StockValuationsView extends ItemView {
 						this.plugin.settings.taxRate
 					);
 				}
+				record.lastPriceRefreshAt = Date.now();
 				updated++;
 			}
 		} finally {
