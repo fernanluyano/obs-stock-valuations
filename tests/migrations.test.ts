@@ -38,6 +38,7 @@ function fixtureResults(overrides: Partial<Results> = {}): Results {
 		wacc: 0.09,
 		dcfIv: 60,
 		dcfMos: 0.2,
+		impliedGrowth: 0.07,
 		grahamIv: 55,
 		grahamMos: 0.1,
 		tenCapIv: 45,

@@ -22,11 +22,12 @@ Technical reference for working on this plugin. See `README.md` for user-facing 
 
 - **WACC** (`calculations.ts: calcWacc`) — cost of equity via CAPM (`rfr + beta * mrp`), cost of debt as `intExp / totDebt` tax-adjusted by `taxRate`, blended by market-value weight (`mktCap` vs `totDebt`).
 - **DCF** (`calcDcf`) — 10-year, two-stage free cash flow projection: `growth1to5` for years 1–5, `growth6to10` for years 6–10, discounted at WACC. Year 10 flows into a Gordon Growth terminal value at `terminalGrowth`, and `netDebt` is subtracted from enterprise value before dividing by `shares` to get equity value per share.
+- **Reverse DCF** (`calcImpliedGrowth`) — fixes price and every other `DcfInputs` field, bisects for the `growth1to5` that makes `calcDcf(...)` equal price (`calcDcf` is monotonic increasing in `growth1to5` for a fixed `wacc`, so bisection is safe). Returns `NaN` when price falls outside what the `[lo, hi]` bracket (default `[-0.5, 1.0]`) can produce, which the UI shows as "—". `valuationCalc.ts: computeResultsForState` wires it into `Results.impliedGrowth`; `view.ts: renderResults()` surfaces it as its own labeled row in the results panel's "Other metrics" table (`HELP_TEXT.impliedGrowth` behind the row's `?` icon) rather than a grid — kept out of the "Margin of safety" table above it since it has no MoS of its own (see `mosRow`/`metricRow` in `renderResults()`).
 - **Graham Formula** (`calcGraham`) — `EPS * (8.5 + 2g) * 4.4 / Y`, where `g` is expected EPS growth and `Y` is the current AAA bond yield.
 - **Ten Cap** (`calcTenCap`) — owner earnings (`ocf - capex * mainPct`) valued at a 10x multiple, plus owner-earnings yield at the current price (`ownerEarningsYield`).
 - Margin of safety: `marginOfSafety`.
 
-These five functions are pure and have no Obsidian dependency — see `tests/calculations.test.ts` for their exact behavior, including edge cases (zero shares, zero debt, non-positive bond yield, etc).
+These six functions are pure and have no Obsidian dependency — see `tests/calculations.test.ts` for their exact behavior, including edge cases (zero shares, zero debt, non-positive bond yield, out-of-bracket reverse DCF, etc).
 
 ### Research links (implementation)
 

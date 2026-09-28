@@ -11,11 +11,11 @@ Open it from the ribbon icon (🏛️ landmark icon) or the **Open calculator** 
 All four methods run from a single form and are computed together every time an input changes.
 
 - **WACC** — weighted average cost of capital, used as the DCF's discount rate.
-- **DCF** — a 10-year, two-stage free cash flow projection, discounted back to a present value.
+- **DCF** — a 10-year, two-stage free cash flow projection, discounted back to a present value. Also runs a **reverse DCF** alongside it: solving backward from today's price for the years 1–5 growth rate the market is already assuming (every other DCF input held fixed) — a gut check on whether that implied growth is realistic, without debating the forward growth/WACC assumptions directly.
 - **Graham Formula** — Benjamin Graham's classic valuation formula based on earnings and growth.
 - **Ten Cap** — values a business's owner earnings at a 10x multiple, plus the owner-earnings yield at the current price.
 
-Each method also reports a **margin of safety** — how far below intrinsic value the current price trades, as a %. Open the built-in Help screen (below) for the exact formula behind each method and honest guidance on when it does and doesn't apply.
+Each method also reports a **margin of safety** — how far below intrinsic value the current price trades, as a %. The results panel splits these into two tables: **Margin of safety** (DCF/Graham/Ten Cap — the three that actually have a fair value and a MoS to show) and **Other metrics** (WACC, reverse DCF's implied growth, Ten Cap's owner-earnings yield — real numbers, but not a valuation with a MoS of their own; a `?` icon next to a metric's name explains it). Open the built-in Help screen (below) for the exact formula behind each method and honest guidance on when it does and doesn't apply.
 
 ### 📝 Calculator form
 

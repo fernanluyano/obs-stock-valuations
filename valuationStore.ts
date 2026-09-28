@@ -36,6 +36,7 @@ export interface Results {
 	wacc: number;
 	dcfIv: number;
 	dcfMos: number;
+	impliedGrowth: number;
 	grahamIv: number;
 	grahamMos: number;
 	tenCapIv: number;

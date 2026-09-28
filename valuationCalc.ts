@@ -2,7 +2,7 @@
 // fields into real numbers and runs them through the calculations.ts
 // formulas. Kept pure and Obsidian-free so it can be unit tested directly —
 // see tests/valuationCalc.test.ts.
-import { calcDcf, calcGraham, calcTenCap, calcWacc, marginOfSafety, ownerEarningsYield } from "./calculations";
+import { calcDcf, calcGraham, calcImpliedGrowth, calcTenCap, calcWacc, marginOfSafety, ownerEarningsYield } from "./calculations";
 import { SCALE_MULTIPLIERS, ScaleUnit } from "./units";
 import { FormState, Results } from "./valuationStore";
 
@@ -93,7 +93,7 @@ export function computeResultsForState(
 		mktCap: mktCap.raw,
 	});
 
-	const dcfIv = calcDcf({
+	const dcfInputs = {
 		netDebt: n("netDebt"),
 		shares: n("shares"),
 		growth1to5: n("growth1to5"),
@@ -101,7 +101,9 @@ export function computeResultsForState(
 		terminalGrowth: n("terminalGrowth"),
 		wacc,
 		fcf: n("fcf"),
-	});
+	};
+	const dcfIv = calcDcf(dcfInputs);
+	const impliedGrowth = calcImpliedGrowth(dcfInputs, n("price"));
 
 	const grahamIv = calcGraham({
 		eps: n("eps"),
@@ -121,6 +123,7 @@ export function computeResultsForState(
 		wacc,
 		dcfIv,
 		dcfMos: marginOfSafety(dcfIv, price),
+		impliedGrowth,
 		grahamIv,
 		grahamMos: marginOfSafety(grahamIv, price),
 		tenCapIv: tenCap.iv,

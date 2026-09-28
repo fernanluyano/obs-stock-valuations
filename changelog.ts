@@ -8,6 +8,12 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.8.0",
+		highlights: [
+			"🔁 New \"Reverse DCF (implied growth)\" row in the results panel's Other metrics table — solves backward from today's price for the flat FCF growth rate the market is already assuming, a quick gut check against the company's own growth history and guidance",
+		],
+	},
+	{
 		version: "0.7.1",
 		highlights: [
 			"🔧 Fixed a plugin-review lint failure (direct style assignments instead of Obsidian's CSS helpers)",

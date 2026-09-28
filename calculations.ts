@@ -56,6 +56,26 @@ export function calcDcf(i: DcfInputs): number {
 	return i.shares === 0 ? NaN : equityValue / i.shares;
 }
 
+// Solves for one flat growth rate applied to both years 1-5 and years 6-10
+// (the classic reverse-DCF convention — see e.g. Mauboussin's Expectations
+// Investing), holding terminal growth/WACC/net debt/shares/FCF at the form's
+// values. growth1to5 and growth6to10 on `inputs` are both overwritten by the
+// solve; only the other fields matter.
+export function calcImpliedGrowth(inputs: DcfInputs, price: number, lo = -0.5, hi = 1.0, tolerance = 1e-6): number {
+	const f = (g: number) => calcDcf({ ...inputs, growth1to5: g, growth6to10: g }) - price;
+
+	if (f(lo) > 0 || f(hi) < 0) return NaN;
+
+	for (let i = 0; i < 100; i++) {
+		const mid = (lo + hi) / 2;
+		const fm = f(mid);
+		if (Math.abs(fm) < tolerance) return mid;
+		if (fm > 0) hi = mid;
+		else lo = mid;
+	}
+	return (lo + hi) / 2;
+}
+
 // Fixed, recognizable round-number axes for the DCF sensitivity grid —
 // deliberately not centered on whatever the user happens to have typed, so
 // the grid reads as "the plausible range for any stock" rather than a tight

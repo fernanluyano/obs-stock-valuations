@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { calcDcf } from "../calculations";
 import { computeResultsForState, deriveMarketCap, numFromState } from "../valuationCalc";
 import type { FormState } from "../valuationStore";
 
@@ -99,6 +100,34 @@ describe("computeResultsForState", () => {
 		expect(expensive.grahamMos).toBeLessThan(cheap.grahamMos);
 		expect(expensive.tenCapMos).toBeLessThan(cheap.tenCapMos);
 		expect(expensive.tenCapYield).toBeLessThan(cheap.tenCapYield);
+	});
+
+	// shares is bumped to a realistic count for the same reason as the price
+	// test above — at the fixture's default shares: "100", even calcImpliedGrowth's
+	// most extreme bracket (-50% growth) implies a per-share value in the
+	// millions, so no price in normal test ranges is reachable.
+	it("computes impliedGrowth such that calcDcf at that growth reproduces the current price", () => {
+		const state = fixtureState({ shares: "20000000" });
+		const r = computeResultsForState(state, "millions", "ones", 21);
+
+		const n = (key: keyof FormState) => numFromState(state, key, "millions", "ones", 21);
+		const reconstructedIv = calcDcf({
+			netDebt: n("netDebt"),
+			shares: n("shares"),
+			growth1to5: r.impliedGrowth,
+			growth6to10: r.impliedGrowth,
+			terminalGrowth: n("terminalGrowth"),
+			wacc: r.wacc,
+			fcf: n("fcf"),
+		});
+
+		expect(reconstructedIv).toBeCloseTo(n("price"), 4);
+	});
+
+	it("a higher price implies a higher growth rate", () => {
+		const cheap = computeResultsForState(fixtureState({ price: "10", shares: "20000000" }), "millions", "ones", 21);
+		const expensive = computeResultsForState(fixtureState({ price: "80", shares: "20000000" }), "millions", "ones", 21);
+		expect(expensive.impliedGrowth).toBeGreaterThan(cheap.impliedGrowth);
 	});
 
 	it("falls back to the default tax rate when taxRate is blank, same as a fetched-but-empty field", () => {

@@ -2019,16 +2019,50 @@ export class StockValuationsView extends ItemView {
 		this.heroPriceEl.setText(price > 0 ? formatCurrency(price) : "");
 
 		this.resultsEl.empty();
-		const table = this.resultsEl.createEl("table");
-		const head = table.createEl("tr");
-		["Method", "Value", "MoS"].forEach((h) => head.createEl("th", { text: h }));
 
-		const row = (name: string, val: string, mos: number | null) => {
-			const tr = table.createEl("tr");
-			tr.createEl("td", { text: name });
+		// helpKey, when given, adds a "?" tooltip/click-for-Notice icon next to
+		// the cell's label (same widget as the form's per-field help buttons) —
+		// for rows like Reverse DCF whose name alone doesn't explain what the
+		// number means.
+		const labelCell = (parent: HTMLElement, name: string, helpKey?: string) => {
+			const td = parent.createEl("td");
+			const helpText = helpKey ? HELP_TEXT[helpKey] : undefined;
+			if (!helpText) {
+				td.setText(name);
+				return;
+			}
+			const group = td.createDiv({ cls: "sv-field-label-group" });
+			group.createSpan({ text: name });
+			const helpBtn = group.createSpan({ cls: "sv-help-btn", text: "?" });
+			helpBtn.setAttr("role", "button");
+			helpBtn.setAttr("tabindex", "0");
+			setTooltip(helpBtn, helpText, { placement: "top" });
+			const showHelp = (e: Event) => {
+				e.preventDefault();
+				new Notice(helpText, 8000);
+			};
+			helpBtn.addEventListener("click", showHelp);
+			helpBtn.addEventListener("keydown", (e) => {
+				if (e.key === "Enter" || e.key === " ") showHelp(e);
+			});
+		};
+
+		// Valuation methods only — every row here has both a fair value and a
+		// margin of safety against today's price. WACC, Reverse DCF, and Ten
+		// Cap's owner-earnings yield are inputs/derived stats, not valuations,
+		// so they live in the plain metrics table below instead of forcing a
+		// meaningless "—" into this table's MoS column.
+		this.resultsEl.createEl("h4", { text: "Margin of safety", cls: "sv-results-subhead" });
+		const mosTable = this.resultsEl.createEl("table");
+		const mosHead = mosTable.createEl("tr");
+		["Method", "Value", "MoS"].forEach((h) => mosHead.createEl("th", { text: h }));
+
+		const mosRow = (name: string, val: string, mos: number) => {
+			const tr = mosTable.createEl("tr");
+			labelCell(tr, name);
 			tr.createEl("td", { text: val, cls: "sv-num" });
 			const mosCell = tr.createEl("td", { cls: "sv-num sv-mos" });
-			if (mos === null || !isFinite(mos)) {
+			if (!isFinite(mos)) {
 				mosCell.setText("—");
 			} else {
 				mosCell.createSpan({ cls: mos >= 0 ? "sv-dot sv-dot-pos" : "sv-dot sv-dot-neg" });
@@ -2036,15 +2070,26 @@ export class StockValuationsView extends ItemView {
 			}
 		};
 
-		row("WACC", formatPercent(r.wacc * 100), null);
-		row("DCF", formatCurrency(r.dcfIv), r.dcfMos);
-		row("Graham", formatCurrency(r.grahamIv), r.grahamMos);
-		row("Ten Cap", formatCurrency(r.tenCapIv), r.tenCapMos);
+		mosRow("DCF", formatCurrency(r.dcfIv), r.dcfMos);
+		mosRow("Graham", formatCurrency(r.grahamIv), r.grahamMos);
+		mosRow("Ten Cap", formatCurrency(r.tenCapIv), r.tenCapMos);
 
-		this.resultsEl.createEl("p", {
-			text: `Ten Cap owner-earnings yield: ${formatPercent(r.tenCapYield)}`,
-			cls: "sv-note",
-		});
+		// Everything else: real numbers worth showing, but not a fair value
+		// with a margin of safety attached — no MoS column to fake one for them.
+		this.resultsEl.createEl("h4", { text: "Other metrics", cls: "sv-results-subhead" });
+		const metricsTable = this.resultsEl.createEl("table");
+		const metricsHead = metricsTable.createEl("tr");
+		["Metric", "Value"].forEach((h) => metricsHead.createEl("th", { text: h }));
+
+		const metricRow = (name: string, val: string, helpKey?: string) => {
+			const tr = metricsTable.createEl("tr");
+			labelCell(tr, name, helpKey);
+			tr.createEl("td", { text: val, cls: "sv-num" });
+		};
+
+		metricRow("WACC", formatPercent(r.wacc * 100));
+		metricRow("Reverse DCF (implied growth)", formatPercent(r.impliedGrowth * 100), "impliedGrowth");
+		metricRow("Ten Cap owner-earnings yield", formatPercent(r.tenCapYield));
 	}
 
 	// DCF fair value across a fixed grid: WACC (columns) × growth yrs 1-5

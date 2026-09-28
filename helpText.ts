@@ -29,6 +29,8 @@ export const HELP_TEXT: Record<string, string> = {
 	growth6to10: "Expected free cash flow growth rate for years 6 through 10 of the DCF projection, typically lower than years 1-5.",
 	terminalGrowth: "Terminal growth rate: the perpetual growth rate assumed after year 10, used in the Gordon Growth terminal value. Should be conservative (near long-run GDP growth).",
 	fcf: "Trailing twelve month free cash flow — the base year cash flow the DCF projection compounds forward from." + SEC_NOTE,
+	impliedGrowth:
+		"Reverse DCF: solves backward from today's price for the single flat FCF growth rate the market is already assuming across years 1-10, holding every other DCF input (terminal growth, WACC, net debt, shares, FCF) fixed. Judge this one number against the company's own growth history and guidance — a good gut check when forward growth/WACC assumptions feel too easy to fudge. Shows \"—\" when the current price is outside what a −50% to +100% growth range can produce.",
 
 	eps: "Trailing twelve month diluted earnings per share." + SEC_NOTE,
 	grahamGrowth: "Expected annual EPS growth rate over the next 7-10 years, per Graham's original formula.",

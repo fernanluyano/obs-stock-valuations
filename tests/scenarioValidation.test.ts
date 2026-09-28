@@ -40,6 +40,7 @@ const blankResults: Results = {
 	wacc: 0,
 	dcfIv: 0,
 	dcfMos: 0,
+	impliedGrowth: 0,
 	grahamIv: 0,
 	grahamMos: 0,
 	tenCapIv: 0,

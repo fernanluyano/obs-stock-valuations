@@ -4,6 +4,7 @@ import {
 	calcDcfGrid,
 	calcGraham,
 	calcGrahamGrid,
+	calcImpliedGrowth,
 	calcTenCap,
 	calcTenCapGrid,
 	calcWacc,
@@ -160,6 +161,90 @@ describe("calcDcfGrid", () => {
 		// Two rows, one column: only growth1to5 differs between the two cells,
 		// so the values shouldn't collapse to the same number.
 		expect(result.grid[0][0]).not.toEqual(result.grid[1][0]);
+	});
+});
+
+describe("calcImpliedGrowth", () => {
+	const baseInputs = {
+		netDebt: 1000,
+		shares: 100,
+		growth1to5: 0.1, // both overwritten by the solve; only the other fields matter
+		growth6to10: 0.05,
+		terminalGrowth: 0.025,
+		wacc: 0.08,
+		fcf: 500,
+	};
+
+	it("recovers the flat growth rate that produced a given price", () => {
+		const targetGrowth = 0.12;
+		const price = calcDcf({ ...baseInputs, growth1to5: targetGrowth, growth6to10: targetGrowth });
+
+		const implied = calcImpliedGrowth(baseInputs, price);
+
+		expect(implied).toBeCloseTo(targetGrowth, 5);
+	});
+
+	it("round-trips through calcDcf: calcDcf at the implied growth matches price", () => {
+		const price = 850;
+		const implied = calcImpliedGrowth(baseInputs, price);
+		expect(calcDcf({ ...baseInputs, growth1to5: implied, growth6to10: implied })).toBeCloseTo(price, 4);
+	});
+
+	it("finds a negative implied growth when price is below the flat-growth case", () => {
+		const flatPrice = calcDcf({ ...baseInputs, growth1to5: 0, growth6to10: 0 });
+		const implied = calcImpliedGrowth(baseInputs, flatPrice - 50);
+		expect(implied).toBeLessThan(0);
+	});
+
+	it("returns NaN when price is above what the [lo, hi] range can produce", () => {
+		const maxPrice = calcDcf({ ...baseInputs, growth1to5: 1.0, growth6to10: 1.0 });
+		expect(calcImpliedGrowth(baseInputs, maxPrice + 1)).toBeNaN();
+	});
+
+	it("returns NaN when price is below what the [lo, hi] range can produce", () => {
+		const minPrice = calcDcf({ ...baseInputs, growth1to5: -0.5, growth6to10: -0.5 });
+		expect(calcImpliedGrowth(baseInputs, minPrice - 1)).toBeNaN();
+	});
+
+	it("respects custom lo/hi bounds", () => {
+		const targetGrowth = 0.3;
+		const price = calcDcf({ ...baseInputs, growth1to5: targetGrowth, growth6to10: targetGrowth });
+
+		// Default range [-0.5, 1.0] would find it; a narrower range that excludes
+		// it should report NaN instead of a wrong root.
+		expect(calcImpliedGrowth(baseInputs, price, -0.1, 0.2)).toBeNaN();
+		expect(calcImpliedGrowth(baseInputs, price, 0, 0.5)).toBeCloseTo(targetGrowth, 5);
+	});
+
+	// Cross-check against an independent, publicly documented reverse-DCF
+	// calculator (stocksimplifier.com/reverse-dcf-calculator): flat FCF growth
+	// for the whole forecast period, Gordon-growth terminal value, net debt
+	// (here net cash, so negative) subtracted from enterprise value — the same
+	// convention calcImpliedGrowth now uses (growth1to5 === growth6to10).
+	// Confirms calcDcf's formula agrees with an independently-implemented
+	// reverse DCF on real inputs, not just with itself.
+	it("matches an independent reverse-DCF calculator's real-world example", () => {
+		const inputs = {
+			netDebt: -1123e6, // "net cash or net debt": 1123 (positive = net cash)
+			shares: 407e6,
+			growth1to5: 0, // irrelevant: calcImpliedGrowth overwrites both growth fields
+			growth6to10: -0.045, // irrelevant here; kept only for the ivAtDisplayedRate check below
+			terminalGrowth: 0.03,
+			wacc: 0.1,
+			fcf: 10592e6,
+		};
+		const price = 225.8;
+
+		// The calculator's own displayed rate ("-4.5% a year") reproduces its
+		// own price to within a few cents — the residual is just its 1-decimal
+		// rounding.
+		const ivAtDisplayedRate = calcDcf({ ...inputs, growth1to5: inputs.growth6to10 });
+		expect(ivAtDisplayedRate).toBeCloseTo(price, 0);
+
+		// calcImpliedGrowth solves the same flat-rate problem directly and
+		// recovers essentially the same rate.
+		const implied = calcImpliedGrowth(inputs, price);
+		expect(implied).toBeCloseTo(-0.045, 2);
 	});
 });
 
