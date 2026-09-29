@@ -11,6 +11,8 @@ export const CHANGELOG: ChangelogEntry[] = [
 		version: "0.8.0",
 		highlights: [
 			"🔁 New \"Reverse DCF (implied growth)\" row in the results panel's Other metrics table — solves backward from today's price for the flat FCF growth rate the market is already assuming, a quick gut check against the company's own growth history and guidance",
+			"📈 New \"Valuation history\" table on the calculator form — every explicit Save (never a price-only refresh) appends a timestamped snapshot, so you can see whether a ticker has actually looked cheap for a long stretch and never re-rated, or whether a big margin of safety is brand new. Paginated and sortable like the main table; delete a mistaken entry or compact everything older than 6 months down to one entry per month, both with confirmation",
+			"🔁 Reverse DCF (implied growth) is now also its own column in the saved-valuations table and the vault summary note, not just the results panel",
 		],
 	},
 	{

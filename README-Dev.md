@@ -10,7 +10,8 @@ Technical reference for working on this plugin. See `README.md` for user-facing 
 | `view.ts` | The calculator + table UI (`ItemView`), including form rendering, chart rendering, screen state, and the research-link menus/modals |
 | `calculations.ts` | Pure valuation math (WACC, DCF, Graham, Ten Cap, margin of safety, owner earnings yield) |
 | `settings.ts` | Settings schema, defaults, and the settings tab UI (imperative `display()` for pre-1.13 Obsidian, plus the declarative `getSettingDefinitions()` for 1.13+) |
-| `valuationStore.ts` | Types for saved valuations and the in-memory/persisted table |
+| `valuationStore.ts` | Types for saved valuations and the in-memory/persisted table, including a ticker's `HistoryEntry[]` timeline |
+| `historyStore.ts` | Pure logic for a saved valuation's history timeline — append-with-dedupe-by-day, single-entry delete, and 6-month/monthly compaction |
 | `noteSync.ts` | Regenerates the vault summary note from the valuation table |
 | `priceProvider.ts` | Yahoo Finance quote lookup |
 | `units.ts` | Scale (ones/thousands/millions/billions) types, labels, and multipliers |
@@ -39,6 +40,15 @@ These six functions are pure and have no Obsidian dependency — see `tests/calc
 - "Research notes folder" is a plain text field, no autocomplete (a hand-rolled `AbstractInputSuggest` subclass was tried and dropped — couldn't confirm it was actually firing at runtime, not worth the unverifiable custom code). Instead, `settings.ts: researchFolderWarning()` is a non-blocking sanity check called from both the imperative `onChange` and the declarative `setControlValue()`: if the typed path resolves to an existing file (not a folder) it warns; if it doesn't exist yet it warns but still saves the value, since `view.ts: createAndLinkResearchNote()` creates the folder automatically the first time a note is actually added there. Surfaced via `Notice`, not a persisted inline error — deliberately not wired through the declarative API's `validate` hook, which *rejects* (doesn't persist) a value on a non-empty return, which is wrong here since a not-yet-existing folder is a valid, expected state.
 - Vault summary note: `noteSync.ts: researchLinkCell()` renders a bare wikilink (`[[path-without-extension|Research]]`, pipe-escaped) or `—`. Toggling the feature off never deletes `researchNotePath` from any record — it only stops rendering the column in both places. Deleting the whole row (`deleteValuation()`) is still what removes a link for good, same as it removes everything else about that ticker.
 
+### Valuation history (implementation)
+
+- Data: `HistoryEntry` (`valuationStore.ts`) — `at` (epoch ms, doubles as dedupe key and chart x-axis), `price`, `dcfBearIv`/`dcfBaseIv`/`dcfBullIv`, `grahamBearIv`/`grahamBaseIv`/`grahamBullIv`, `tenCapIv`, `impliedGrowth`. No MoS fields — always derived from `iv`/`price` via `calculations.ts: marginOfSafety` at render time, never stored, so a formula change can't leave stale MoS sitting in old entries. `SavedValuation.history?: HistoryEntry[]`, omitted (not `[]`) once empty, same convention as `researchNotePath`/`lastPriceRefreshAt`. Purely additive to the schema — no `CURRENT_SCHEMA_VERSION` bump, same reasoning as those two optional fields.
+- Logic: `historyStore.ts`, Obsidian-free and fully unit tested (`tests/historyStore.test.ts`). `appendHistoryEntry` replaces any existing entry from the same **local** calendar day rather than accumulating one per save; `deleteHistoryEntry` removes by exact timestamp; `compactHistory` collapses anything older than ~182 days to the latest entry per calendar month (local time), leaving recent entries untouched — idempotent, and the caller's job to gate behind a confirmation since it's irreversible.
+- Wiring: `view.ts: saveValuation()` builds one `HistoryEntry` per explicit Save from the record it just built (all three scenarios' DCF/Graham IV, Base's Ten Cap/impliedGrowth) and runs it through `appendHistoryEntry`, carrying the prior `history` forward from `this.originalTicker` the same way `researchNotePath`/`lastPriceRefreshAt` are. `refreshAllPrices()` mutates `plugin.valuations` directly and never calls `saveValuation()`, so a price-only refresh can't add a history entry — that's structural, not a flag to remember to check.
+- UI: `view.ts: renderHistorySection()`/`renderHistoryTabulator()`, rendered last on the calculator form (`renderForm()`), after the sensitivity grids — skipped entirely for a brand-new, never-saved valuation (`this.originalTicker === null`). Read live off `this.plugin.valuations`, not copied into form state, same as research links. The table itself is a second `Tabulator` instance (`this.historyTabulator`, torn down in `destroyTabulator()` alongside the others) with the same paginated/sortable/responsive-collapse setup as the main table (`StockValuationsView.PAGE_SIZE` rows/page) — `HistoryRow`/`buildHistoryRow()` flatten a `HistoryEntry` into precomputed IV/MoS pairs the same shape as `TableRow`, and `ivMosFormatter` was genericized (`ivMosFormatter<T>`) so both tables' columns share one formatter. Delete and Compact both go through `ConfirmModal`, then a full `this.render()` — same "just re-render the screen" pattern as every other data-mutating action here (delete/link/unlink), rather than patching the Tabulator instance in place.
+- Docs: `docs.ts: VALUATION_HISTORY_DOC`, rendered in `view.ts: renderDocs()` right after `DATA_SOURCES_DOC` — explicitly states history only accrues forward from the next Save, since there's no way to reconstruct entries for saves made before this feature existed.
+- Never touches the vault note: `noteContent.ts: buildNoteContent()` reads only `scenarios`/`updatedAt` — structurally incapable of seeing `history`, not just conventionally.
+
 ## Development
 
 ```
@@ -55,7 +65,7 @@ Run `make help` for the full list of targets.
 
 ### Testing
 
-`calculations.ts`, `format.ts`, and `units.ts` are pure and framework-agnostic, so they're covered by unit tests under `tests/` (Vitest). The rest of the plugin (`main.ts`, `view.ts`, `settings.ts`, `noteSync.ts`, `priceProvider.ts`) is written directly against the Obsidian API/DOM and isn't currently unit tested — verify changes there by loading the built plugin in a vault (`make build`, then copy `main.js`/`manifest.json`/`styles.css` into `<vault>/.obsidian/plugins/stock-valuations/` and reload Obsidian).
+`calculations.ts`, `format.ts`, `units.ts`, and `historyStore.ts` are pure and framework-agnostic, so they're covered by unit tests under `tests/` (Vitest). The rest of the plugin (`main.ts`, `view.ts`, `settings.ts`, `noteSync.ts`, `priceProvider.ts`) is written directly against the Obsidian API/DOM and isn't currently unit tested — verify changes there by loading the built plugin in a vault (`make build`, then copy `main.js`/`manifest.json`/`styles.css` into `<vault>/.obsidian/plugins/stock-valuations/` and reload Obsidian).
 
 ### Build
 

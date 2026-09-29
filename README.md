@@ -23,7 +23,7 @@ Each method also reports a **margin of safety** — how far below intrinsic valu
 - Per-field help tooltips (the `?` button next to each input)
 - A configurable **input scale** (ones/thousands/millions/billions) applied separately to money figures (debt, FCF, OCF, capex, market cap, ...) and to share counts — so you can key in numbers exactly as a filing reports them, without doing the unit math yourself
 - **🐂 Bull / Base / 🐻 Bear scenario tabs** — DCF and Graham project three growth scenarios side by side, each independently editable; every other field (price, shares, WACC inputs, trailing financials, ...) is a shared fact edited once on Base and inherited read-only on Bull/Bear. Ten Cap has no scenario-specific input, so it's always a single value regardless of tab.
-- **Save** stores all three scenarios keyed by ticker, overwriting any prior save for that ticker
+- **Save** stores all three scenarios keyed by ticker, overwriting any prior save's current values — a timestamped snapshot is also appended to that ticker's history (see **Valuation history** below), never overwritten
 
 ### 📊 Sensitivity grids
 
@@ -37,9 +37,15 @@ Every grid shows fair value across a small, fixed range of that method's key ass
 
 ### 🗂️ Saved valuations table
 
-- One row per saved ticker; DCF and Graham each split into Bear/Base/Bull sub-columns, alongside Ten Cap's IV/MoS/yield, current price, and last-updated date
+- One row per saved ticker; DCF and Graham each split into Bear/Base/Bull sub-columns, alongside Reverse DCF, Ten Cap's IV/MoS/yield, current price, and last-updated date
 - Sortable columns, pagination, and clicking a row opens it for editing; Delete removes the row (with confirmation)
 - Two charts per page of stocks: margin of safety by method (one bar per method off Base, with a whisker marking the Bear-to-Bull spread where scenarios diverge), and Ten Cap yield vs. bond yield
+
+### 📈 Valuation history
+
+Every explicit Save appends a timestamped snapshot (price, DCF/Graham Bear/Base/Bull, Ten Cap, Reverse DCF) to that ticker's own history — a second table, paginated and sortable just like the saved-valuations table, at the bottom of that ticker's calculator form. A price-only refresh (the table's "Refresh prices" button) never adds an entry; only an explicit Save does, and saving more than once on the same calendar day replaces that day's entry instead of piling up duplicates.
+
+The point is answering a value-trap question the current-state view can't: has this ticker actually looked cheap for a long stretch and never re-rated, or is a big margin of safety brand new? History only accrues going forward — there's no way to build it backwards, so a ticker saved before this feature existed starts with an empty table and fills in from your next Save on. Delete any entry (with confirmation) if it was a mistake, or use **Compact history** (also confirmed) to collapse everything older than ~6 months down to one entry per calendar month, keeping years of regular saves from growing the file without bound. History is supplementary — the saved-valuations table and the vault summary note always reflect the latest save only, never the history behind it.
 
 ### 🔗 Research links (optional)
 
@@ -47,7 +53,7 @@ Off by default (**Settings → Optional features → Link research notes**). Whe
 
 ### 🗒️ Vault summary note
 
-Every save/delete regenerates a markdown table of all saved valuations at a location you configure in Settings (default `Stock Valuations/Stock Valuations.md`). It's the vault-visible mirror of the plugin's own data — rewritten in full on every change, so don't hand-edit it; edits there won't persist. DCF and Graham each get a Bear/Base/Bull column (IV and MoS packed into one cell, e.g. `$164/-33%`); Ten Cap has no scenario-specific input, so it's a single column. It includes a **Research** column (a link) when research links are enabled above.
+Every save/delete regenerates a markdown table of all saved valuations at a location you configure in Settings (default `Stock Valuations/Stock Valuations.md`). It's the vault-visible mirror of the plugin's own data — rewritten in full on every change, so don't hand-edit it; edits there won't persist, and it always reflects each ticker's latest save only, never its history. DCF and Graham each get a Bear/Base/Bull column (IV and MoS packed into one cell, e.g. `$164/-33%`); Ten Cap and Reverse DCF have no scenario-specific spread worth showing three ways, so each is a single column. It includes a **Research** column (a link) when research links are enabled above.
 
 ### ❓ Help & methodology
 

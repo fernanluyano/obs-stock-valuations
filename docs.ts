@@ -30,6 +30,19 @@ export interface DataSourceDoc {
 // this plugin fetches data on the user's behalf (price and fundamentals) and
 // neither source is a verified, official feed, so this exists to make sure
 // that's never mistaken for ground truth.
+// Rendered right after "Where the data comes from" — this is the other piece
+// of "how the plugin works" that isn't a per-method formula, so it lives
+// alongside that section rather than inside the method docs below.
+export const VALUATION_HISTORY_DOC: DataSourceDoc = {
+	title: "Valuation history",
+	body: [
+		"Every explicit Save on the calculator form appends a snapshot (price, DCF/Graham Bear/Base/Bull fair values, Ten Cap, and Reverse DCF) to that ticker's own history table, shown at the bottom of the form. A price-only refresh from the table's \"Refresh prices\" button never adds an entry — only an explicit Save does. Saving more than once on the same calendar day replaces that day's entry instead of adding another, so re-saving a few times while mid-edit doesn't spam the timeline.",
+		"History only accrues forward from here — there's no way to build it backwards. A ticker saved before this feature existed (or one you haven't re-saved since) starts with an empty history table; it fills in one entry at a time from your next Save onward, not retroactively.",
+		"The point is a specific question: has this ticker actually looked cheap for a long stretch and never re-rated (a value trap), or is a big margin of safety brand new? History is supplementary — the saved-valuations table and the vault summary note always reflect the latest save only, never the history behind it.",
+		"Delete any single entry (with confirmation) if it was a mistake. \"Compact history\" (also confirmed) collapses everything older than about 6 months down to one entry per calendar month, so the file doesn't grow without bound over years of regular saves — the most recent 6 months are always left at full detail.",
+	],
+};
+
 export const DATA_SOURCES_DOC: DataSourceDoc = {
 	title: "Where the data comes from",
 	body: [
@@ -67,7 +80,7 @@ export const METHOD_DOCS: MethodDoc[] = [
 			"A two-stage, 10-year free cash flow projection discounted at WACC, with a Gordon Growth terminal value covering everything past year 10.",
 		],
 		goodFor: "High-margin, recurring-revenue businesses with a multi-year track record of positive, converting free cash flow.",
-		useCaution: "Weak for companies with no single meaningful FCF figure (large financials, insurers, or diversified holding companies where cash flow is swamped by portfolio/segment movements), and for anything where growth or discount-rate assumptions do more work than the underlying cash flow — terminal value alone is typically 60–75% of the result, so a small change to either input swings the output 30–50%+. Use the \"Reverse DCF (implied growth)\" row in the results panel's Other metrics table as a gut check on this, especially on higher-multiple names: it solves backward from today's price for the single flat years 1–10 growth rate the market is already assuming (holding every other DCF input fixed), so you can judge that one number against the company's own history and guidance instead of debating growth/WACC assumptions in the abstract.",
+		useCaution: "Weak for companies with no single meaningful FCF figure (large financials, insurers, or diversified holding companies where cash flow is swamped by portfolio/segment movements), and for anything where growth or discount-rate assumptions do more work than the underlying cash flow — terminal value alone is typically 60–75% of the result, so a small change to either input swings the output 30–50%+. Use \"Reverse DCF (implied growth)\" as a gut check on this, especially on higher-multiple names — shown in the results panel's Other metrics table, and as its own column in the saved-valuations table and vault summary note: it solves backward from today's price for the single flat years 1–10 growth rate the market is already assuming (holding every other DCF input fixed), so you can judge that one number against the company's own history and guidance instead of debating growth/WACC assumptions in the abstract.",
 		sources: [
 			{ label: "Discounted cash flow — Wikipedia", url: "https://en.wikipedia.org/wiki/Discounted_cash_flow" },
 			{ label: "Terminal Value (DCF) — Wall Street Prep", url: "https://www.wallstreetprep.com/knowledge/terminal-value/" },

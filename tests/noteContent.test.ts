@@ -51,7 +51,10 @@ function fixtureResults(overrides: Partial<Results> = {}): Results {
 		wacc: 0.09,
 		dcfIv: 60,
 		dcfMos: 20,
-		impliedGrowth: 7,
+		// A fraction (0.07 = 7%), same convention as the real calcImpliedGrowth
+		// output — unlike the MoS fields above, which are already percentage
+		// points (see marginOfSafety/ownerEarningsYield in calculations.ts).
+		impliedGrowth: 0.07,
 		grahamIv: 55,
 		grahamMos: 10,
 		tenCapIv: 45,
@@ -98,13 +101,13 @@ describe("buildNoteContent", () => {
 		expect(row).toBeDefined();
 
 		const cells = row!.split("|").map((c) => c.trim());
-		// | ACME | DCF Bear | DCF Base | DCF Bull | Ten Cap | Ten Cap Yield | Graham Bear | Graham Base | Graham Bull | Price | Updated |
+		// | ACME | DCF Bear | DCF Base | DCF Bull | Reverse DCF | Ten Cap | Ten Cap Yield | Graham Bear | Graham Base | Graham Bull | Price | Updated |
 		expect(cells[2]).toBe("$40.00/-5.00%");
 		expect(cells[3]).toBe("$60.00/20.00%");
 		expect(cells[4]).toBe("$80.00/45.00%");
-		expect(cells[7]).toBe("$45.00/-2.00%");
-		expect(cells[8]).toBe("$55.00/10.00%");
-		expect(cells[9]).toBe("$65.00/22.00%");
+		expect(cells[8]).toBe("$45.00/-2.00%");
+		expect(cells[9]).toBe("$55.00/10.00%");
+		expect(cells[10]).toBe("$65.00/22.00%");
 	});
 
 	it("reads price and Ten Cap figures off the Base scenario, not Bear/Bull", () => {
@@ -119,9 +122,37 @@ describe("buildNoteContent", () => {
 		const row = content.split("\n").find((line) => line.startsWith("| ACME"))!;
 		const cells = row.split("|").map((c) => c.trim());
 
-		expect(cells[5]).toBe("$45.00/-10.00%"); // Ten Cap
-		expect(cells[6]).toBe("8.00%"); // Ten Cap Yield
-		expect(cells[10]).toBe("$50.00"); // Price
+		expect(cells[6]).toBe("$45.00/-10.00%"); // Ten Cap
+		expect(cells[7]).toBe("8.00%"); // Ten Cap Yield
+		expect(cells[11]).toBe("$50.00"); // Price
+	});
+
+	it("reports Reverse DCF (implied growth) off the Base scenario, as a percent", () => {
+		const table: ValuationTable = {
+			ACME: fixtureRecord({
+				base: fixtureScenario({ results: fixtureResults({ impliedGrowth: 0.123 }) }),
+			}),
+		};
+
+		const content = buildNoteContent(table, false);
+		const row = content.split("\n").find((line) => line.startsWith("| ACME"))!;
+		const cells = row.split("|").map((c) => c.trim());
+
+		expect(cells[5]).toBe("12.30%");
+	});
+
+	it("shows Reverse DCF as — when implied growth is unsolvable (NaN)", () => {
+		const table: ValuationTable = {
+			ACME: fixtureRecord({
+				base: fixtureScenario({ results: fixtureResults({ impliedGrowth: NaN }) }),
+			}),
+		};
+
+		const content = buildNoteContent(table, false);
+		const row = content.split("\n").find((line) => line.startsWith("| ACME"))!;
+		const cells = row.split("|").map((c) => c.trim());
+
+		expect(cells[5]).toBe("—");
 	});
 
 	it("adds a Research column only when includeResearchColumn is true", () => {

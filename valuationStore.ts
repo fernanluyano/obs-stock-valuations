@@ -51,6 +51,27 @@ export interface Scenario {
 	results: Results;
 }
 
+// One point in a ticker's saved-over-time timeline — a bare snapshot of the
+// numbers that matter for "fair value vs. price over months/years", not the
+// full FormState (see historyStore.ts). Bear/Base/Bull for DCF and Graham
+// (the two methods with a scenario-specific input), same split as the home
+// table and the vault note; Ten Cap and Reverse DCF stay single values,
+// matching how those are already shown everywhere else in the plugin. `at`
+// doubles as the dedupe key (one entry per calendar day) and the x-axis value
+// wherever this gets charted.
+export interface HistoryEntry {
+	at: number; // epoch ms
+	price: number;
+	dcfBearIv: number;
+	dcfBaseIv: number;
+	dcfBullIv: number;
+	grahamBearIv: number;
+	grahamBaseIv: number;
+	grahamBullIv: number;
+	tenCapIv: number;
+	impliedGrowth: number;
+}
+
 // A saved row in the plugin's own valuation table — created and edited only
 // through the calculator form, never hand-edited.
 export interface SavedValuation {
@@ -72,6 +93,13 @@ export interface SavedValuation {
 	// nothing about the note's contents or format is read or assumed.
 	// Preserved across form saves; removed only by explicitly unlinking it.
 	researchNotePath?: string;
+
+	// Saved-over-time timeline, appended to on every form Save (never on a
+	// price-only refresh) — see historyStore.ts. Omitted rather than an empty
+	// array once nothing's left, same convention as the optional fields
+	// above. Never written to the vault summary note (noteContent.ts reads
+	// only `scenarios`/`updatedAt`) — that note always reflects latest only.
+	history?: HistoryEntry[];
 }
 
 // Keyed by uppercase ticker.

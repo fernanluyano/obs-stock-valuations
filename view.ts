@@ -11,7 +11,18 @@ import {
 	setIcon,
 	setTooltip,
 } from "obsidian";
-import { BarController, BarElement, CategoryScale, Chart, LinearScale, Legend, Tooltip } from "chart.js";
+import {
+	BarController,
+	BarElement,
+	CategoryScale,
+	Chart,
+	LinearScale,
+	Legend,
+	LineController,
+	LineElement,
+	PointElement,
+	Tooltip,
+} from "chart.js";
 import {
 	FormatModule,
 	InteractionModule,
@@ -22,7 +33,7 @@ import {
 } from "tabulator-tables";
 import type { CellComponent, ColumnDefinition } from "tabulator-tables";
 import type StockValuationsPlugin from "./main";
-import { calcDcfGrid, calcGrahamGrid, calcTenCapGrid, DcfInputs, GrahamInputs, TenCapInputs } from "./calculations";
+import { calcDcfGrid, calcGrahamGrid, calcTenCapGrid, DcfInputs, GrahamInputs, marginOfSafety, TenCapInputs } from "./calculations";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
@@ -30,14 +41,25 @@ import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundament
 import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
-import { FormState, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
-import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS } from "./docs";
+import { FormState, HistoryEntry, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
+import { appendHistoryEntry, compactHistory, deleteHistoryEntry } from "./historyStore";
+import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS, VALUATION_HISTORY_DOC } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
 import { validateScenarios } from "./scenarioValidation";
 import { ensureFolderExists } from "./noteSync";
 
-Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
+Chart.register(
+	BarController,
+	BarElement,
+	CategoryScale,
+	LinearScale,
+	Legend,
+	LineController,
+	LineElement,
+	PointElement,
+	Tooltip
+);
 // Core Tabulator + only the modules the table actually uses (cell formatters,
 // column sorting, pagination, row click, responsive column collapsing) — not
 // TabulatorFull, which bundles every module (filtering, editing, export,
@@ -62,6 +84,16 @@ const SCENARIO_TOOLTIPS: Record<ScenarioKey, string> = {
 	bull: "Optimistic assumptions.",
 	base: "Most-likely assumptions.",
 	bear: "Pessimistic assumptions.",
+};
+
+// Which HistoryEntry fields hold DCF/Graham's fair value for a given
+// scenario — used by renderHistoryChart to draw one "fair value vs. price"
+// chart per scenario. Ten Cap and price have no scenario-specific value (see
+// SCENARIO_SPECIFIC_FIELDS), so only DCF/Graham vary here.
+const HISTORY_SCENARIO_FIELDS: Record<ScenarioKey, { dcf: keyof HistoryEntry; graham: keyof HistoryEntry }> = {
+	bull: { dcf: "dcfBullIv", graham: "grahamBullIv" },
+	base: { dcf: "dcfBaseIv", graham: "grahamBaseIv" },
+	bear: { dcf: "dcfBearIv", graham: "grahamBearIv" },
 };
 
 function cloneScenario(s: Scenario): Scenario {
@@ -92,6 +124,7 @@ interface TableRow {
 	dcfBaseMos: number;
 	dcfBullIv: number;
 	dcfBullMos: number;
+	impliedGrowth: number;
 	tenCapIv: number;
 	tenCapMos: number;
 	tenCapYield: number;
@@ -120,6 +153,10 @@ function buildTableRow(ticker: string, saved: SavedValuation): TableRow {
 		dcfBaseMos: base.results.dcfMos,
 		dcfBullIv: bull.results.dcfIv,
 		dcfBullMos: bull.results.dcfMos,
+		// Reverse DCF has a scenario-specific input (terminal growth), like DCF
+		// itself, but reads off Base only — same convention as Ten Cap Yield
+		// below, to avoid a Bear/Base/Bull spread for one auxiliary metric.
+		impliedGrowth: base.results.impliedGrowth,
 		// Ten Cap has no scenario-specific input (see SCENARIO_SPECIFIC_FIELDS
 		// above), so bear/base/bull are always identical — one value suffices.
 		tenCapIv: base.results.tenCapIv,
@@ -141,15 +178,63 @@ function buildTableRow(ticker: string, saved: SavedValuation): TableRow {
 // Packs IV and MoS into one cell ("$164/-33%") instead of splitting them
 // across two columns. `field` on the column holds the MoS value (so sorting
 // the column sorts by margin of safety, the more decision-relevant number);
-// `ivField` names the sibling field this formatter pulls the IV from.
-function ivMosFormatter(ivField: keyof TableRow): (cell: CellComponent) => string {
+// `ivField` names the sibling field this formatter pulls the IV from. Shared
+// by the ticker table (TableRow) and the per-ticker history table
+// (HistoryRow) below — same cell convention in both places, so the type
+// parameter is always given explicitly at the call site rather than inferred.
+function ivMosFormatter<T>(ivField: keyof T): (cell: CellComponent) => string {
 	return (cell) => {
 		const mos = cell.getValue() as number;
-		const iv = (cell.getData() as TableRow)[ivField] as number;
+		const iv = (cell.getData() as T)[ivField] as number;
 		const el = cell.getElement();
 		el.classList.remove("sv-mos-pos", "sv-mos-neg");
 		if (isFinite(mos)) el.classList.add(mos >= 0 ? "sv-mos-pos" : "sv-mos-neg");
 		return `${formatCurrency(iv, 0)}/${formatPercent(mos, 0)}`;
+	};
+}
+
+// One row per history entry for the Tabulator table in renderHistoryTabulator
+// — same flattened-and-precomputed shape as TableRow above (MoS derived from
+// the stored IV + price, not stored itself; see HistoryEntry).
+interface HistoryRow {
+	at: number;
+	price: number;
+	dcfBearIv: number;
+	dcfBearMos: number;
+	dcfBaseIv: number;
+	dcfBaseMos: number;
+	dcfBullIv: number;
+	dcfBullMos: number;
+	grahamBearIv: number;
+	grahamBearMos: number;
+	grahamBaseIv: number;
+	grahamBaseMos: number;
+	grahamBullIv: number;
+	grahamBullMos: number;
+	tenCapIv: number;
+	tenCapMos: number;
+	impliedGrowth: number;
+}
+
+function buildHistoryRow(entry: HistoryEntry): HistoryRow {
+	return {
+		at: entry.at,
+		price: entry.price,
+		dcfBearIv: entry.dcfBearIv,
+		dcfBearMos: marginOfSafety(entry.dcfBearIv, entry.price),
+		dcfBaseIv: entry.dcfBaseIv,
+		dcfBaseMos: marginOfSafety(entry.dcfBaseIv, entry.price),
+		dcfBullIv: entry.dcfBullIv,
+		dcfBullMos: marginOfSafety(entry.dcfBullIv, entry.price),
+		grahamBearIv: entry.grahamBearIv,
+		grahamBearMos: marginOfSafety(entry.grahamBearIv, entry.price),
+		grahamBaseIv: entry.grahamBaseIv,
+		grahamBaseMos: marginOfSafety(entry.grahamBaseIv, entry.price),
+		grahamBullIv: entry.grahamBullIv,
+		grahamBullMos: marginOfSafety(entry.grahamBullIv, entry.price),
+		tenCapIv: entry.tenCapIv,
+		tenCapMos: marginOfSafety(entry.tenCapIv, entry.price),
+		impliedGrowth: entry.impliedGrowth,
 	};
 }
 
@@ -277,6 +362,16 @@ export class StockValuationsView extends ItemView {
 	private tenCapSensitivityTabulator: Tabulator | null = null;
 	private tenCapSensitivityWrapEl!: HTMLElement;
 	private tabulator: Tabulator | null = null;
+	// Per-ticker "Valuation history" table on the form screen — same
+	// paginated/sortable Tabulator as `tabulator` above, just a second
+	// instance. Rebuilt (via a full render()) on any delete/compact, never
+	// patched in place.
+	private historyTabulator: Tabulator | null = null;
+	// "Fair value vs. price" line charts under the history table — one per
+	// scenario (Bull/Base/Bear), destroyed in destroyChart() alongside
+	// stockMosChart, rebuilt whenever the history section itself is (full
+	// render(), same as the table above).
+	private historyCharts: Chart[] = [];
 	private static readonly PAGE_SIZE = 10;
 
 	constructor(leaf: WorkspaceLeaf, plugin: StockValuationsPlugin) {
@@ -522,6 +617,9 @@ export class StockValuationsView extends ItemView {
 		const previousPriceRefresh = this.originalTicker
 			? this.plugin.valuations[this.originalTicker]?.lastPriceRefreshAt
 			: undefined;
+		const previousHistory = this.originalTicker
+			? this.plugin.valuations[this.originalTicker]?.history
+			: undefined;
 
 		// The record is keyed by one ticker — every scenario must agree on it,
 		// even though only one tab is on screen when Save is clicked. Results
@@ -538,6 +636,7 @@ export class StockValuationsView extends ItemView {
 			);
 		}
 
+		const now = Date.now();
 		const record: SavedValuation = {
 			scenarios: {
 				bull: cloneScenario(this.scenarios.bull),
@@ -546,15 +645,384 @@ export class StockValuationsView extends ItemView {
 			},
 			moneyScale: this.moneyScale,
 			sharesScale: this.sharesScale,
-			updatedAt: Date.now(),
+			updatedAt: now,
 		};
 		if (previousLink) record.researchNotePath = previousLink;
 		if (previousPriceRefresh) record.lastPriceRefreshAt = previousPriceRefresh;
+
+		// One history entry per explicit Save (never on a price-only refresh —
+		// see refreshAllPrices, which writes straight into plugin.valuations and
+		// never goes through here) — same numbers this record itself now holds,
+		// Bear/Base/Bull for DCF and Graham like everywhere else in the plugin.
+		// appendHistoryEntry collapses same-day re-saves so resaving a few times
+		// in one sitting doesn't spam the timeline.
+		const { bear: bearResults, base: baseResults, bull: bullResults } = record.scenarios;
+		const historyEntry: HistoryEntry = {
+			at: now,
+			price: parseFloat(baseResults.state.price) || 0,
+			dcfBearIv: bearResults.results.dcfIv,
+			dcfBaseIv: baseResults.results.dcfIv,
+			dcfBullIv: bullResults.results.dcfIv,
+			grahamBearIv: bearResults.results.grahamIv,
+			grahamBaseIv: baseResults.results.grahamIv,
+			grahamBullIv: bullResults.results.grahamIv,
+			tenCapIv: baseResults.results.tenCapIv,
+			impliedGrowth: baseResults.results.impliedGrowth,
+		};
+		const history = appendHistoryEntry(previousHistory, historyEntry);
+		if (history.length > 0) record.history = history;
+
 		this.plugin.valuations[ticker] = record;
 		void this.plugin.saveValuations();
 		new Notice(`Saved ${ticker}.`);
 		this.screen = "table";
 		this.render();
+	}
+
+	// ---------------------------------------------------------------------
+	// Valuation history — one entry per day this ticker was explicitly saved
+	// (see saveValuation() above and historyStore.ts). Read live off
+	// this.plugin.valuations rather than copied into form state, same as
+	// researchNotePath, so delete/compact take effect immediately without
+	// re-opening the form.
+	// ---------------------------------------------------------------------
+
+	// Only meaningful once at least one Save has happened — a brand-new,
+	// never-saved valuation has nothing to show yet, so the section is
+	// skipped entirely rather than rendered empty.
+	private renderHistorySection(parent: HTMLElement): void {
+		if (!this.originalTicker) return;
+		const ticker = this.originalTicker;
+		const history = this.plugin.valuations[ticker]?.history ?? [];
+
+		const section = parent.createDiv({ cls: "sv-chart-section" });
+		const header = section.createDiv({ cls: "sv-table-header" });
+		header.createEl("h3", { text: "Valuation history" });
+		if (history.length > 0) {
+			const actions = header.createDiv({ cls: "sv-header-actions" });
+			const compactBtn = actions.createEl("button", { cls: "sv-docs-btn" });
+			compactBtn.createSpan({ text: "Compact history" });
+			setTooltip(compactBtn, "Collapses entries older than 6 months to one per month. Can't be undone.");
+			compactBtn.addEventListener("click", () => {
+				new ConfirmModal(
+					this.app,
+					`Compact history for ${ticker}? Entries older than 6 months will be collapsed to one per calendar month — the detail in between can't be recovered.`,
+					() => {
+						const saved = this.plugin.valuations[ticker];
+						if (!saved?.history) return;
+						const compacted = compactHistory(saved.history, Date.now());
+						if (compacted.length > 0) saved.history = compacted;
+						else delete saved.history;
+						void this.plugin.saveValuations();
+						// Full re-render, same as every other data-mutating action on
+						// this screen (delete/link/unlink) — simplest way to keep the
+						// table, its pagination, and the Compact button's visibility
+						// (hidden once history is empty) all in sync.
+						this.render();
+					},
+					"Compact"
+				).open();
+			});
+		}
+		section.createEl("p", {
+			cls: "sv-chart-caption",
+			text: "One entry per day this ticker was saved from the calculator (price-only refreshes don't add entries, and resaving the same day replaces that day's entry rather than adding another). Delete a mistaken entry, or compact everything older than 6 months down to one entry per month to keep the list short — both need confirmation and can't be undone.",
+		});
+
+		if (history.length === 0) {
+			section.createEl("p", { cls: "sv-empty-state", text: "No history yet — each Save adds an entry here." });
+			return;
+		}
+
+		this.renderHistoryTabulator(section, ticker, history);
+		this.renderHistoryChart(section, history);
+	}
+
+	// Same paginated/sortable Tabulator setup as the table screen's own
+	// spreadsheet (renderTable below), just scoped to one ticker's timeline
+	// instead of every saved ticker — kept to PAGE_SIZE rows per page for the
+	// same reason: an unbounded history (which this feature deliberately lets
+	// grow — see Compact above) shouldn't make the calculator form itself grow
+	// without bound.
+	private renderHistoryTabulator(section: HTMLElement, ticker: string, history: HistoryEntry[]): void {
+		const tableWrap = section.createDiv({ cls: "sv-table-wrap" });
+		const rows: HistoryRow[] = history.map(buildHistoryRow);
+
+		const deleteFormatter = (cell: CellComponent): HTMLElement => {
+			const row = cell.getData() as HistoryRow;
+			const actionsWrap = createSpan({ cls: "sv-actions-cell" });
+			const deleteBtn = actionsWrap.createEl("button", { cls: "sv-icon-btn" });
+			setIcon(deleteBtn.createSpan(), "trash-2");
+			setTooltip(deleteBtn, "Delete this entry");
+			deleteBtn.addEventListener("click", (e) => {
+				e.stopPropagation();
+				new ConfirmModal(
+					this.app,
+					`Delete the ${window.moment(row.at).format("YYYY-MM-DD")} history entry for ${ticker}? This can't be undone.`,
+					() => {
+						const saved = this.plugin.valuations[ticker];
+						if (!saved?.history) return;
+						const remaining = deleteHistoryEntry(saved.history, row.at);
+						if (remaining.length > 0) saved.history = remaining;
+						else delete saved.history;
+						void this.plugin.saveValuations();
+						this.render();
+					},
+					"Delete"
+				).open();
+			});
+			return actionsWrap;
+		};
+
+		const columns: ColumnDefinition[] = [
+			{
+				title: "",
+				formatter: "responsiveCollapse",
+				hozAlign: "center",
+				headerSort: false,
+				width: 30,
+				minWidth: 30,
+				responsive: 0,
+			},
+			{
+				title: "Date",
+				field: "at",
+				sorter: "number",
+				formatter: (cell) => window.moment(cell.getValue() as number).format("YYYY-MM-DD"),
+				cssClass: "sv-num",
+				responsive: 0,
+			},
+			{
+				title: "DCF Bear",
+				field: "dcfBearMos",
+				formatter: ivMosFormatter<HistoryRow>("dcfBearIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "DCF Base",
+				field: "dcfBaseMos",
+				formatter: ivMosFormatter<HistoryRow>("dcfBaseIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 1,
+			},
+			{
+				title: "DCF Bull",
+				field: "dcfBullMos",
+				formatter: ivMosFormatter<HistoryRow>("dcfBullIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "Reverse DCF",
+				field: "impliedGrowth",
+				formatter: (cell) => formatPercent((cell.getValue() as number) * 100, 1),
+				cssClass: "sv-num",
+				responsive: 2,
+			},
+			{
+				title: "Ten Cap IV / MoS",
+				field: "tenCapMos",
+				formatter: ivMosFormatter<HistoryRow>("tenCapIv"),
+				cssClass: "sv-num sv-scenario-col",
+				responsive: 1,
+			},
+			{
+				title: "Graham Bear",
+				field: "grahamBearMos",
+				formatter: ivMosFormatter<HistoryRow>("grahamBearIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "Graham Base",
+				field: "grahamBaseMos",
+				formatter: ivMosFormatter<HistoryRow>("grahamBaseIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 1,
+			},
+			{
+				title: "Graham Bull",
+				field: "grahamBullMos",
+				formatter: ivMosFormatter<HistoryRow>("grahamBullIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "Price",
+				field: "price",
+				formatter: (cell) => formatCurrency(cell.getValue() as number),
+				cssClass: "sv-num",
+				responsive: 1,
+			},
+			{
+				title: "",
+				field: "at",
+				headerSort: false,
+				hozAlign: "right",
+				formatter: deleteFormatter,
+				responsive: 0,
+			},
+		];
+
+		this.historyTabulator = new Tabulator(tableWrap, {
+			data: rows,
+			columns,
+			layout: "fitData",
+			responsiveLayout: "collapse",
+			columnDefaults: { hozAlign: "right", headerSort: true },
+			initialSort: [{ column: "at", dir: "desc" }],
+			pagination: true,
+			paginationSize: StockValuationsView.PAGE_SIZE,
+			paginationCounter: "rows",
+		});
+	}
+
+	// "Fair value vs. price" over time — the first of the chart ideas in
+	// ideas.md's "Charts off the valuation history data": price plus each
+	// method's fair value, oldest to newest, so a ticker that's looked cheap
+	// for a long stretch without re-rating reads as a wide, sustained gap
+	// rather than something you'd have to compare table rows to notice. Same
+	// per-method colors as METHODS (DCF/Graham/Ten Cap) elsewhere in the
+	// plugin, so "which line is which method" reads the same way here as on
+	// the distribution charts and the MoS-by-method chart.
+	// One chart per scenario (Bull/Base/Bear), side by side in a row (same
+	// .sv-chart-row/.sv-chart-col layout as the table screen's two overview
+	// charts). X-axis is a true linear scale over epoch ms, not category/index
+	// — history entries aren't evenly spaced in time (compaction alone
+	// guarantees that), so index-based spacing would misrepresent the actual
+	// gaps.
+	private renderHistoryChart(parent: HTMLElement, history: HistoryEntry[]): void {
+		const section = parent.createDiv({ cls: "sv-chart-section" });
+		section.createEl("h3", { text: "Fair value vs. price" });
+		section.createEl("p", {
+			cls: "sv-chart-caption",
+			text: "Price against each method's fair value, spaced by actual elapsed time (not just entry order) — one chart per scenario, oldest to newest. A price line that stays well under fair value for a long stretch without the gap closing is the value-trap pattern this history table exists to surface. Ten Cap and price aren't scenario-specific, so those two lines are identical across all three charts.",
+		});
+
+		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(section);
+		const dcfMethod = METHODS.find((m) => m.label === "DCF")!;
+		const grahamMethod = METHODS.find((m) => m.label === "Graham")!;
+		const tenCapMethod = METHODS.find((m) => m.label === "Ten Cap")!;
+
+		// One shared legend above all three charts instead of tripling it —
+		// the colors mean the same thing in every one.
+		const legend = section.createDiv({ cls: "sv-grid-legend" });
+		const legendItem = (color: string, text: string) => {
+			const item = legend.createSpan({ cls: "sv-grid-legend-item" });
+			const swatch = item.createSpan({ cls: "sv-grid-legend-swatch" });
+			swatch.setCssStyles({ boxShadow: `inset 0 0 0 2px ${color}` });
+			item.createSpan({ text });
+		};
+		legendItem(normalColor, "Price");
+		legendItem(dcfMethod.color, "DCF");
+		legendItem(grahamMethod.color, "Graham");
+		legendItem(tenCapMethod.color, "Ten Cap");
+
+		const sorted = [...history].sort((a, b) => a.at - b.at);
+		const firstAt = sorted[0].at;
+		const lastAt = sorted[sorted.length - 1].at;
+		// Chart.js's default tick generation for a linear scale rounds to "nice"
+		// values, which tends to land outside the data's actual range and leave
+		// visible padding before the first point and after the last. Forcing the
+		// first/last ticks to the data's own extremes (evenly spaced by time
+		// in between, not by entry count) keeps the axis flush with the data —
+		// see xTickValues below.
+		const X_TICK_COUNT = 4;
+		const xTickValues =
+			firstAt === lastAt
+				? [firstAt]
+				: Array.from({ length: X_TICK_COUNT }, (_, i) => firstAt + ((lastAt - firstAt) * i) / (X_TICK_COUNT - 1));
+		const row = section.createDiv({ cls: "sv-chart-row" });
+
+		for (const key of SCENARIO_KEYS) {
+			const fields = HISTORY_SCENARIO_FIELDS[key];
+			const col = row.createDiv({ cls: "sv-chart-col" });
+			col.createEl("h4", { text: SCENARIO_LABELS[key] });
+			const wrap = col.createDiv({ cls: "sv-chart-canvas-wrap" });
+			wrap.setCssStyles({ height: "220px" });
+			const canvas = wrap.createEl("canvas");
+
+			const chart = new Chart(canvas, {
+				type: "line",
+				data: {
+					datasets: [
+						{
+							label: "Price",
+							data: sorted.map((e) => ({ x: e.at, y: e.price })),
+							borderColor: normalColor,
+							backgroundColor: normalColor,
+							borderWidth: 2.5,
+							pointRadius: 2,
+							tension: 0.1,
+						},
+						{
+							label: "DCF",
+							data: sorted.map((e) => ({ x: e.at, y: e[fields.dcf] })),
+							borderColor: dcfMethod.color,
+							backgroundColor: dcfMethod.color,
+							borderWidth: 1.5,
+							pointRadius: 1.5,
+							tension: 0.1,
+						},
+						{
+							label: "Graham",
+							data: sorted.map((e) => ({ x: e.at, y: e[fields.graham] })),
+							borderColor: grahamMethod.color,
+							backgroundColor: grahamMethod.color,
+							borderWidth: 1.5,
+							pointRadius: 1.5,
+							tension: 0.1,
+						},
+						{
+							label: "Ten Cap",
+							data: sorted.map((e) => ({ x: e.at, y: e.tenCapIv })),
+							borderColor: tenCapMethod.color,
+							backgroundColor: tenCapMethod.color,
+							borderWidth: 1.5,
+							pointRadius: 1.5,
+							tension: 0.1,
+						},
+					],
+				},
+				options: {
+					responsive: true,
+					maintainAspectRatio: false,
+					interaction: { mode: "index", intersect: false },
+					scales: {
+						x: {
+							type: "linear",
+							min: firstAt,
+							max: lastAt,
+							bounds: "data",
+							afterBuildTicks: (axis) => {
+								axis.ticks = xTickValues.map((value) => ({ value }));
+							},
+							grid: { color: borderColor },
+							ticks: {
+								color: mutedColor,
+								maxRotation: 0,
+								callback: (v) => window.moment(Number(v)).format("MMM D"),
+							},
+						},
+						y: {
+							grid: { color: borderColor },
+							ticks: { color: mutedColor, callback: (v) => formatCurrency(Number(v), 0) },
+						},
+					},
+					plugins: {
+						legend: { display: false },
+						tooltip: {
+							callbacks: {
+								title: (items) => (items[0] ? window.moment(items[0].parsed.x).format("YYYY-MM-DD") : ""),
+								label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(Number(ctx.parsed.y))}`,
+							},
+						},
+					},
+				},
+			});
+			this.historyCharts.push(chart);
+		}
 	}
 
 	// ---------------------------------------------------------------------
@@ -660,28 +1128,35 @@ export class StockValuationsView extends ItemView {
 			{
 				title: "DCF Bear",
 				field: "dcfBearMos",
-				formatter: ivMosFormatter("dcfBearIv"),
+				formatter: ivMosFormatter<TableRow>("dcfBearIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 3,
 			},
 			{
 				title: "DCF Base",
 				field: "dcfBaseMos",
-				formatter: ivMosFormatter("dcfBaseIv"),
+				formatter: ivMosFormatter<TableRow>("dcfBaseIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 1,
 			},
 			{
 				title: "DCF Bull",
 				field: "dcfBullMos",
-				formatter: ivMosFormatter("dcfBullIv"),
+				formatter: ivMosFormatter<TableRow>("dcfBullIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 3,
 			},
 			{
+				title: "Reverse DCF",
+				field: "impliedGrowth",
+				formatter: (cell) => formatPercent((cell.getValue() as number) * 100, 1),
+				cssClass: "sv-num",
+				responsive: 2,
+			},
+			{
 				title: "Ten Cap IV / MoS",
 				field: "tenCapMos",
-				formatter: ivMosFormatter("tenCapIv"),
+				formatter: ivMosFormatter<TableRow>("tenCapIv"),
 				cssClass: "sv-num sv-scenario-col",
 				responsive: 1,
 			},
@@ -695,21 +1170,21 @@ export class StockValuationsView extends ItemView {
 			{
 				title: "Graham Bear",
 				field: "grahamBearMos",
-				formatter: ivMosFormatter("grahamBearIv"),
+				formatter: ivMosFormatter<TableRow>("grahamBearIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 3,
 			},
 			{
 				title: "Graham Base",
 				field: "grahamBaseMos",
-				formatter: ivMosFormatter("grahamBaseIv"),
+				formatter: ivMosFormatter<TableRow>("grahamBaseIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 1,
 			},
 			{
 				title: "Graham Bull",
 				field: "grahamBullMos",
-				formatter: ivMosFormatter("grahamBullIv"),
+				formatter: ivMosFormatter<TableRow>("grahamBullIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 3,
 			},
@@ -1105,11 +1580,15 @@ export class StockValuationsView extends ItemView {
 		this.charts = [];
 		this.stockMosChart?.destroy();
 		this.stockMosChart = null;
+		for (const chart of this.historyCharts) chart.destroy();
+		this.historyCharts = [];
 	}
 
 	private destroyTabulator(): void {
 		this.tabulator?.destroy();
 		this.tabulator = null;
+		this.historyTabulator?.destroy();
+		this.historyTabulator = null;
 		this.dcfSensitivityTabulator?.destroy();
 		this.dcfSensitivityTabulator = null;
 		this.grahamSensitivityTabulator?.destroy();
@@ -1211,6 +1690,12 @@ export class StockValuationsView extends ItemView {
 		dataSources.createEl("h3", { text: DATA_SOURCES_DOC.title });
 		for (const p of DATA_SOURCES_DOC.body) {
 			dataSources.createEl("p", { text: p });
+		}
+
+		const historyDoc = wrap.createDiv({ cls: "sv-docs-section" });
+		historyDoc.createEl("h3", { text: VALUATION_HISTORY_DOC.title });
+		for (const p of VALUATION_HISTORY_DOC.body) {
+			historyDoc.createEl("p", { text: p });
 		}
 
 		for (const p of DOCS_INTRO) {
@@ -1343,6 +1828,10 @@ export class StockValuationsView extends ItemView {
 			"Ten Cap",
 			"Maintenance-capex split × how far reported capex might swing from what's on the filing, holding operating cash flow and shares steady."
 		);
+
+		// --- Valuation history — last on the page, on purpose: it's a record
+		// of the past, not something that shapes today's inputs above. ---
+		this.renderHistorySection(root);
 
 		this.recalculate();
 	}

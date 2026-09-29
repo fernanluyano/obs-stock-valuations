@@ -23,13 +23,13 @@ export function buildNoteContent(valuations: ValuationTable, includeResearchColu
 
 	if (includeResearchColumn) {
 		lines.push(
-			"| Symbol | DCF Bear | DCF Base | DCF Bull | Ten Cap | Ten Cap Yield | Graham Bear | Graham Base | Graham Bull | Price | Updated | Research |",
-			"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"
+			"| Symbol | DCF Bear | DCF Base | DCF Bull | Reverse DCF | Ten Cap | Ten Cap Yield | Graham Bear | Graham Base | Graham Bull | Price | Updated | Research |",
+			"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"
 		);
 	} else {
 		lines.push(
-			"| Symbol | DCF Bear | DCF Base | DCF Bull | Ten Cap | Ten Cap Yield | Graham Bear | Graham Base | Graham Bull | Price | Updated |",
-			"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+			"| Symbol | DCF Bear | DCF Base | DCF Bull | Reverse DCF | Ten Cap | Ten Cap Yield | Graham Bear | Graham Base | Graham Bull | Price | Updated |",
+			"|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
 		);
 	}
 
@@ -41,16 +41,16 @@ export function buildNoteContent(valuations: ValuationTable, includeResearchColu
 			`| ${ticker} | ${ivMosCell(bear.results.dcfIv, bear.results.dcfMos)} | ${ivMosCell(
 				base.results.dcfIv,
 				base.results.dcfMos
-			)} | ${ivMosCell(bull.results.dcfIv, bull.results.dcfMos)} | ${ivMosCell(
-				base.results.tenCapIv,
-				base.results.tenCapMos
-			)} | ${formatPercent(base.results.tenCapYield)} | ${ivMosCell(
-				bear.results.grahamIv,
-				bear.results.grahamMos
-			)} | ${ivMosCell(base.results.grahamIv, base.results.grahamMos)} | ${ivMosCell(
-				bull.results.grahamIv,
-				bull.results.grahamMos
-			)} | ${formatCurrency(price)} | ${window.moment(v.updatedAt).format("YYYY-MM-DD")} |`;
+			)} | ${ivMosCell(bull.results.dcfIv, bull.results.dcfMos)} | ${formatPercent(
+				base.results.impliedGrowth * 100
+			)} | ${ivMosCell(base.results.tenCapIv, base.results.tenCapMos)} | ${formatPercent(
+				base.results.tenCapYield
+			)} | ${ivMosCell(bear.results.grahamIv, bear.results.grahamMos)} | ${ivMosCell(
+				base.results.grahamIv,
+				base.results.grahamMos
+			)} | ${ivMosCell(bull.results.grahamIv, bull.results.grahamMos)} | ${formatCurrency(
+				price
+			)} | ${window.moment(v.updatedAt).format("YYYY-MM-DD")} |`;
 		if (includeResearchColumn) {
 			row += ` ${researchLinkCell(v.researchNotePath)} |`;
 		}
