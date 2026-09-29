@@ -1,7 +1,8 @@
 // Pure logic for a saved valuation's history timeline (see HistoryEntry in
-// valuationStore.ts) — append-with-dedupe, manual single-entry delete, and
-// compaction. Kept Obsidian-free so it's directly unit testable.
-import type { HistoryEntry } from "./valuationStore";
+// valuationStore.ts) — building an entry, append-with-dedupe, manual
+// single-entry delete, and compaction. Kept Obsidian-free so it's directly
+// unit testable.
+import type { HistoryEntry, Scenario, ScenarioKey } from "./valuationStore";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Approximate — exact calendar-month boundaries aren't the point, "roughly
@@ -20,6 +21,30 @@ function dayKey(at: number): string {
 function monthKey(at: number): string {
 	const d = new Date(at);
 	return `${d.getFullYear()}-${d.getMonth()}`;
+}
+
+// Builds the point-in-time snapshot appended to a ticker's history — the
+// numbers that matter for "fair value vs. price over time", Bear/Base/Bull
+// for DCF and Graham like everywhere else in the plugin. Shared by an
+// explicit form Save and a price refresh: a refresh only ever changes price
+// and everything derived from it (MoS, IV), never fundamentals, but that's
+// exactly what this timeline is tracking, so it earns a history point same as
+// a Save does. Price and Ten Cap/growth are read off Base — every scenario
+// shares the same price, and Ten Cap/Reverse DCF have no scenario lever.
+export function buildHistoryEntry(at: number, scenarios: Record<ScenarioKey, Scenario>): HistoryEntry {
+	const { bear, base, bull } = scenarios;
+	return {
+		at,
+		price: parseFloat(base.state.price) || 0,
+		dcfBearIv: bear.results.dcfIv,
+		dcfBaseIv: base.results.dcfIv,
+		dcfBullIv: bull.results.dcfIv,
+		grahamBearIv: bear.results.grahamIv,
+		grahamBaseIv: base.results.grahamIv,
+		grahamBullIv: bull.results.grahamIv,
+		tenCapIv: base.results.tenCapIv,
+		impliedGrowth: base.results.impliedGrowth,
+	};
 }
 
 // Appends `entry`, replacing any existing entry from the same calendar day —

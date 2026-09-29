@@ -42,7 +42,7 @@ import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
 import { FormState, HistoryEntry, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
-import { appendHistoryEntry, compactHistory, deleteHistoryEntry } from "./historyStore";
+import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry } from "./historyStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS, VALUATION_HISTORY_DOC } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
@@ -425,7 +425,7 @@ export class StockValuationsView extends ItemView {
 	}
 
 	private resetForm(): void {
-		const s = this.plugin.settings;
+		const s = this.plugin.data.settings;
 		this.originalTicker = null;
 		this.moneyScale = s.defaultMoneyScale;
 		this.sharesScale = s.defaultSharesScale;
@@ -476,7 +476,7 @@ export class StockValuationsView extends ItemView {
 	}
 
 	private loadIntoForm(ticker: string): void {
-		const saved = this.plugin.valuations[ticker];
+		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return;
 		this.originalTicker = ticker;
 		this.moneyScale = saved.moneyScale;
@@ -505,7 +505,7 @@ export class StockValuationsView extends ItemView {
 				this.scenarios[key].state,
 				this.moneyScale,
 				this.sharesScale,
-				this.plugin.settings.taxRate
+				this.plugin.data.settings.taxRate
 			);
 		}
 
@@ -557,8 +557,7 @@ export class StockValuationsView extends ItemView {
 
 	private deleteValuation(ticker: string): void {
 		new ConfirmModal(this.app, `Delete the saved valuation for ${ticker}?`, () => {
-			delete this.plugin.valuations[ticker];
-			void this.plugin.saveValuations();
+			void this.plugin.data.deleteValuation(ticker);
 			this.render();
 		}).open();
 	}
@@ -588,7 +587,7 @@ export class StockValuationsView extends ItemView {
 	private warnIfDuplicateTicker(): boolean {
 		const ticker = this.state.ticker.trim().toUpperCase();
 		if (!ticker || ticker === this.originalTicker) return false;
-		if (!this.plugin.valuations[ticker]) return false;
+		if (!this.plugin.data.getValuation(ticker)) return false;
 		new Notice(`A valuation for ${ticker} already exists — edit it from the table instead, or delete it first.`, 8000);
 		return true;
 	}
@@ -609,17 +608,12 @@ export class StockValuationsView extends ItemView {
 		// A linked research note is set only from the table, never this form —
 		// carry it forward from the record being edited so re-saving the
 		// calculator inputs can't silently drop it.
-		const previousLink = this.originalTicker
-			? this.plugin.valuations[this.originalTicker]?.researchNotePath
-			: undefined;
+		const previousRecord = this.originalTicker ? this.plugin.data.getValuation(this.originalTicker) : undefined;
+		const previousLink = previousRecord?.researchNotePath;
 		// Carried forward, not reset here — an ordinary form save doesn't
 		// guarantee the price was actually refreshed, only refreshAllPrices does.
-		const previousPriceRefresh = this.originalTicker
-			? this.plugin.valuations[this.originalTicker]?.lastPriceRefreshAt
-			: undefined;
-		const previousHistory = this.originalTicker
-			? this.plugin.valuations[this.originalTicker]?.history
-			: undefined;
+		const previousPriceRefresh = previousRecord?.lastPriceRefreshAt;
+		const previousHistory = previousRecord?.history;
 
 		// The record is keyed by one ticker — every scenario must agree on it,
 		// even though only one tab is on screen when Save is clicked. Results
@@ -632,7 +626,7 @@ export class StockValuationsView extends ItemView {
 				this.scenarios[key].state,
 				this.moneyScale,
 				this.sharesScale,
-				this.plugin.settings.taxRate
+				this.plugin.data.settings.taxRate
 			);
 		}
 
@@ -650,39 +644,25 @@ export class StockValuationsView extends ItemView {
 		if (previousLink) record.researchNotePath = previousLink;
 		if (previousPriceRefresh) record.lastPriceRefreshAt = previousPriceRefresh;
 
-		// One history entry per explicit Save (never on a price-only refresh —
-		// see refreshAllPrices, which writes straight into plugin.valuations and
-		// never goes through here) — same numbers this record itself now holds,
-		// Bear/Base/Bull for DCF and Graham like everywhere else in the plugin.
-		// appendHistoryEntry collapses same-day re-saves so resaving a few times
-		// in one sitting doesn't spam the timeline.
-		const { bear: bearResults, base: baseResults, bull: bullResults } = record.scenarios;
-		const historyEntry: HistoryEntry = {
-			at: now,
-			price: parseFloat(baseResults.state.price) || 0,
-			dcfBearIv: bearResults.results.dcfIv,
-			dcfBaseIv: baseResults.results.dcfIv,
-			dcfBullIv: bullResults.results.dcfIv,
-			grahamBearIv: bearResults.results.grahamIv,
-			grahamBaseIv: baseResults.results.grahamIv,
-			grahamBullIv: bullResults.results.grahamIv,
-			tenCapIv: baseResults.results.tenCapIv,
-			impliedGrowth: baseResults.results.impliedGrowth,
-		};
+		// One history entry per explicit Save, same as one per price refresh
+		// (see refreshAllPrices) — appendHistoryEntry collapses same-day entries
+		// either way, so resaving/refreshing a few times in one sitting doesn't
+		// spam the timeline with more than one entry for that day.
+		const historyEntry = buildHistoryEntry(now, record.scenarios);
 		const history = appendHistoryEntry(previousHistory, historyEntry);
 		if (history.length > 0) record.history = history;
 
-		this.plugin.valuations[ticker] = record;
-		void this.plugin.saveValuations();
+		void this.plugin.data.saveValuation(ticker, record);
 		new Notice(`Saved ${ticker}.`);
 		this.screen = "table";
 		this.render();
 	}
 
 	// ---------------------------------------------------------------------
-	// Valuation history — one entry per day this ticker was explicitly saved
-	// (see saveValuation() above and historyStore.ts). Read live off
-	// this.plugin.valuations rather than copied into form state, same as
+	// Valuation history — one entry per day this ticker was either explicitly
+	// saved or had its price refreshed (see saveValuation() and
+	// refreshAllPrices() above, and buildHistoryEntry() in historyStore.ts).
+	// Read live off plugin.data rather than copied into form state, same as
 	// researchNotePath, so delete/compact take effect immediately without
 	// re-opening the form.
 	// ---------------------------------------------------------------------
@@ -693,7 +673,7 @@ export class StockValuationsView extends ItemView {
 	private renderHistorySection(parent: HTMLElement): void {
 		if (!this.originalTicker) return;
 		const ticker = this.originalTicker;
-		const history = this.plugin.valuations[ticker]?.history ?? [];
+		const history = this.plugin.data.getValuation(ticker)?.history ?? [];
 
 		const section = parent.createDiv({ cls: "sv-chart-section" });
 		const header = section.createDiv({ cls: "sv-table-header" });
@@ -708,12 +688,12 @@ export class StockValuationsView extends ItemView {
 					this.app,
 					`Compact history for ${ticker}? Entries older than 6 months will be collapsed to one per calendar month — the detail in between can't be recovered.`,
 					() => {
-						const saved = this.plugin.valuations[ticker];
+						const saved = this.plugin.data.getValuation(ticker);
 						if (!saved?.history) return;
 						const compacted = compactHistory(saved.history, Date.now());
 						if (compacted.length > 0) saved.history = compacted;
 						else delete saved.history;
-						void this.plugin.saveValuations();
+						void this.plugin.data.persistValuations();
 						// Full re-render, same as every other data-mutating action on
 						// this screen (delete/link/unlink) — simplest way to keep the
 						// table, its pagination, and the Compact button's visibility
@@ -724,13 +704,27 @@ export class StockValuationsView extends ItemView {
 				).open();
 			});
 		}
+		// history is sorted ascending by `at` (appendHistoryEntry's guarantee —
+		// see historyStore.ts), so the first/last entries are the min/max dates
+		// without needing to sort again here.
+		if (history.length > 0) {
+			const first = window.moment(history[0].at).format("YYYY-MM-DD");
+			const last = window.moment(history[history.length - 1].at).format("YYYY-MM-DD");
+			section.createEl("p", {
+				cls: "sv-chart-caption",
+				text: `${first} to ${last}`,
+			});
+		}
 		section.createEl("p", {
 			cls: "sv-chart-caption",
-			text: "One entry per day this ticker was saved from the calculator (price-only refreshes don't add entries, and resaving the same day replaces that day's entry rather than adding another). Delete a mistaken entry, or compact everything older than 6 months down to one entry per month to keep the list short — both need confirmation and can't be undone.",
+			text: "One entry per day this ticker was saved or had its price refreshed (whichever happens more than once a day, the last one replaces that day's entry rather than adding another). Delete a mistaken entry, or compact everything older than 6 months down to one entry per month to keep the list short — both need confirmation and can't be undone.",
 		});
 
 		if (history.length === 0) {
-			section.createEl("p", { cls: "sv-empty-state", text: "No history yet — each Save adds an entry here." });
+			section.createEl("p", {
+				cls: "sv-empty-state",
+				text: "No history yet — each Save or price refresh adds an entry here.",
+			});
 			return;
 		}
 
@@ -760,12 +754,12 @@ export class StockValuationsView extends ItemView {
 					this.app,
 					`Delete the ${window.moment(row.at).format("YYYY-MM-DD")} history entry for ${ticker}? This can't be undone.`,
 					() => {
-						const saved = this.plugin.valuations[ticker];
+						const saved = this.plugin.data.getValuation(ticker);
 						if (!saved?.history) return;
 						const remaining = deleteHistoryEntry(saved.history, row.at);
 						if (remaining.length > 0) saved.history = remaining;
 						else delete saved.history;
-						void this.plugin.saveValuations();
+						void this.plugin.data.persistValuations();
 						this.render();
 					},
 					"Delete"
@@ -954,7 +948,7 @@ export class StockValuationsView extends ItemView {
 							backgroundColor: normalColor,
 							borderWidth: 2.5,
 							pointRadius: 2,
-							tension: 0.1,
+							tension: 0.4,
 						},
 						{
 							label: "DCF",
@@ -963,7 +957,7 @@ export class StockValuationsView extends ItemView {
 							backgroundColor: dcfMethod.color,
 							borderWidth: 1.5,
 							pointRadius: 1.5,
-							tension: 0.1,
+							tension: 0.4,
 						},
 						{
 							label: "Graham",
@@ -972,7 +966,7 @@ export class StockValuationsView extends ItemView {
 							backgroundColor: grahamMethod.color,
 							borderWidth: 1.5,
 							pointRadius: 1.5,
-							tension: 0.1,
+							tension: 0.4,
 						},
 						{
 							label: "Ten Cap",
@@ -981,7 +975,7 @@ export class StockValuationsView extends ItemView {
 							backgroundColor: tenCapMethod.color,
 							borderWidth: 1.5,
 							pointRadius: 1.5,
-							tension: 0.1,
+							tension: 0.4,
 						},
 					],
 				},
@@ -1041,7 +1035,7 @@ export class StockValuationsView extends ItemView {
 		setTooltip(docsBtn, "Help & methodology");
 		docsBtn.addEventListener("click", () => this.openDocs());
 
-		const tickers = Object.keys(this.plugin.valuations);
+		const tickers = this.plugin.data.tickers();
 
 		// Valuations don't update themselves when the market moves — flag
 		// whichever tickers haven't had even a price refresh in a while, since
@@ -1053,7 +1047,7 @@ export class StockValuationsView extends ItemView {
 		// Clicking sorts the table oldest-first (missing ones land first too),
 		// so the badge stays useful even once you've acted on part of it.
 		const STALE_MS = 7 * 24 * 60 * 60 * 1000;
-		const lastKnownFreshAt = (t: string) => this.plugin.valuations[t].lastPriceRefreshAt ?? 0;
+		const lastKnownFreshAt = (t: string) => this.plugin.data.getValuation(t)?.lastPriceRefreshAt ?? 0;
 		const staleCount = tickers.filter((t) => Date.now() - lastKnownFreshAt(t) > STALE_MS).length;
 		const staleBtn = headerActions.createEl("button", { cls: "sv-docs-btn sv-stale-btn" });
 		setIcon(staleBtn.createSpan({ cls: "sv-docs-btn-icon" }), "alert-triangle");
@@ -1092,7 +1086,7 @@ export class StockValuationsView extends ItemView {
 		}
 
 		const showResearch = this.isResearchLinksEnabled();
-		const rows: TableRow[] = tickers.map((t) => buildTableRow(t, this.plugin.valuations[t]));
+		const rows: TableRow[] = tickers.map((t) => buildTableRow(t, this.plugin.data.getValuation(t)!));
 
 		const wrap = root.createDiv({ cls: "sv-table-wrap" });
 		const tableEl = wrap.createDiv();
@@ -1291,7 +1285,7 @@ export class StockValuationsView extends ItemView {
 	// node for Tabulator to insert rather than building into a <td> directly.
 	private researchFormatter = (cell: CellComponent): HTMLElement | string => {
 		const ticker = (cell.getData() as TableRow).ticker;
-		const saved = this.plugin.valuations[ticker];
+		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return "";
 		const path = saved.researchNotePath;
 		const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
@@ -1318,7 +1312,7 @@ export class StockValuationsView extends ItemView {
 					`Remove the research link for ${ticker}? "${file.basename}" itself won't be touched.`,
 					() => {
 						delete saved.researchNotePath;
-						void this.plugin.saveValuations();
+						void this.plugin.data.persistValuations();
 						this.render();
 					},
 					"Remove link"
@@ -1412,7 +1406,7 @@ export class StockValuationsView extends ItemView {
 		// this directly, never an average across methods.
 		const tickersByMethodBucket: string[][][] = METHODS.map(() => BUCKETS.map(() => []));
 		for (const t of tickers) {
-			const { base } = this.plugin.valuations[t].scenarios;
+			const { base } = this.plugin.data.getValuation(t)!.scenarios;
 			METHODS.forEach((m, methodIndex) => {
 				const v = base.results[m.mosKey];
 				if (!isFinite(v)) return;
@@ -1479,8 +1473,8 @@ export class StockValuationsView extends ItemView {
 		const tenCap = METHODS.find((m) => m.label === "Ten Cap")!;
 
 		const spreadOf = (t: string) => {
-			const state = this.plugin.valuations[t].scenarios.base.state;
-			const yield_ = this.plugin.valuations[t].scenarios.base.results.tenCapYield;
+			const state = this.plugin.data.getValuation(t)!.scenarios.base.state;
+			const yield_ = this.plugin.data.getValuation(t)!.scenarios.base.results.tenCapYield;
 			const bond = parseFloat(state.aaaYield);
 			return isFinite(yield_) && isFinite(bond) ? yield_ - bond : null;
 		};
@@ -1527,8 +1521,8 @@ export class StockValuationsView extends ItemView {
 							callbacks: {
 								label: (ctx) => {
 									const ticker = tickers[ctx.dataIndex];
-									const state = this.plugin.valuations[ticker].scenarios.base.state;
-									const yield_ = this.plugin.valuations[ticker].scenarios.base.results.tenCapYield;
+									const state = this.plugin.data.getValuation(ticker)!.scenarios.base.state;
+									const yield_ = this.plugin.data.getValuation(ticker)!.scenarios.base.results.tenCapYield;
 									const bond = parseFloat(state.aaaYield);
 									return `Ten Cap yield ${formatPercent(yield_)} vs. bond ${formatPercent(bond)}`;
 								},
@@ -1603,7 +1597,7 @@ export class StockValuationsView extends ItemView {
 	// ---------------------------------------------------------------------
 
 	private isResearchLinksEnabled(): boolean {
-		return researchLinksActive(this.plugin.settings);
+		return researchLinksActive(this.plugin.data.settings);
 	}
 
 	private openLinkNoteMenu(evt: MouseEvent, ticker: string): void {
@@ -1621,7 +1615,7 @@ export class StockValuationsView extends ItemView {
 				.setTitle("Create a new note here…")
 				.setIcon("plus")
 				.onClick(() => {
-					const folder = this.plugin.settings.researchNotesFolder;
+					const folder = this.plugin.data.settings.researchNotesFolder;
 					const filename = `${ticker}-research`;
 					const path = normalizePath(folder ? `${folder}/${filename}.md` : `${filename}.md`);
 					if (this.app.vault.getAbstractFileByPath(path)) {
@@ -1641,10 +1635,10 @@ export class StockValuationsView extends ItemView {
 	}
 
 	private setResearchLink(ticker: string, path: string): void {
-		const saved = this.plugin.valuations[ticker];
+		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return;
 		saved.researchNotePath = path;
-		void this.plugin.saveValuations();
+		void this.plugin.data.persistValuations();
 		this.render();
 	}
 
@@ -1761,6 +1755,14 @@ export class StockValuationsView extends ItemView {
 		for (const highlight of entry.highlights) {
 			list.createEl("li", { text: highlight });
 		}
+
+		const support = wrap.createEl("p", { cls: "sv-changelog-support" });
+		support.createSpan({ text: "☕ Enjoying the plugin? " });
+		support.createEl("a", {
+			text: "Buy me a coffee",
+			href: "https://buymeacoffee.com/fernanluyano",
+			cls: "external-link",
+		});
 	}
 
 	// ---------------------------------------------------------------------
@@ -2149,7 +2151,7 @@ export class StockValuationsView extends ItemView {
 		// Settings default (see num()) — the placeholder makes that fallback
 		// visible instead of leaving an empty box with no explanation.
 		if (key === "taxRate") {
-			input.placeholder = `${this.plugin.settings.taxRate} (Settings default)`;
+			input.placeholder = `${this.plugin.data.settings.taxRate} (Settings default)`;
 		}
 
 		input.value = isFormattedNumber ? formatWithCommas(this.state[key]) : this.state[key];
@@ -2256,7 +2258,7 @@ export class StockValuationsView extends ItemView {
 	}
 
 	private num(key: keyof FormState): number {
-		return numFromState(this.state, key, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
+		return numFromState(this.state, key, this.moneyScale, this.sharesScale, this.plugin.data.settings.taxRate);
 	}
 
 	// Like num(), but for a named scenario instead of always the active one —
@@ -2264,7 +2266,7 @@ export class StockValuationsView extends ItemView {
 	// once regardless of which tab is on screen (see renderDcfSensitivityGrid
 	// etc.).
 	private numOf(key: ScenarioKey, field: keyof FormState): number {
-		return numFromState(this.scenarios[key].state, field, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
+		return numFromState(this.scenarios[key].state, field, this.moneyScale, this.sharesScale, this.plugin.data.settings.taxRate);
 	}
 
 	// A field is "unset" — and so fair game for the API to fill — if it's
@@ -2398,9 +2400,13 @@ export class StockValuationsView extends ItemView {
 	// per-ticker form) — no fundamentals are touched. Everything price-derived
 	// is recomputed off the new price: MoS and Ten Cap yield always; market cap
 	// too (price × shares), which in turn moves WACC and DCF IV. Graham and Ten
-	// Cap IV don't depend on WACC/market cap, so those stay fixed.
+	// Cap IV don't depend on WACC/market cap, so those stay fixed. Also appends
+	// a history entry per ticker (see buildHistoryEntry) — MoS/IV moving with
+	// price is exactly what the history timeline exists to track, and
+	// appendHistoryEntry's same-day dedup means refreshing repeatedly in one
+	// sitting still only ever keeps one entry for that day.
 	private async refreshAllPrices(btn: HTMLButtonElement, label: HTMLElement): Promise<void> {
-		const tickers = Object.keys(this.plugin.valuations).sort();
+		const tickers = this.plugin.data.tickers().sort();
 		if (tickers.length === 0 || this.priceRefreshInFlight) return;
 		this.priceRefreshInFlight = true;
 
@@ -2413,7 +2419,7 @@ export class StockValuationsView extends ItemView {
 
 		try {
 			for (const ticker of tickers) {
-				const record = this.plugin.valuations[ticker];
+				const record = this.plugin.data.getValuation(ticker);
 				if (!record) continue;
 				const price = await fetchQuotePrice(ticker);
 				if (price === null) {
@@ -2429,10 +2435,13 @@ export class StockValuationsView extends ItemView {
 						scenario.state,
 						record.moneyScale,
 						record.sharesScale,
-						this.plugin.settings.taxRate
+						this.plugin.data.settings.taxRate
 					);
 				}
 				record.lastPriceRefreshAt = Date.now();
+				const historyEntry = buildHistoryEntry(record.lastPriceRefreshAt, record.scenarios);
+				const history = appendHistoryEntry(record.history, historyEntry);
+				if (history.length > 0) record.history = history;
 				updated++;
 			}
 		} finally {
@@ -2442,7 +2451,7 @@ export class StockValuationsView extends ItemView {
 		}
 
 		if (updated > 0) {
-			void this.plugin.saveValuations();
+			void this.plugin.data.persistValuations();
 		}
 		this.render();
 
@@ -2459,7 +2468,7 @@ export class StockValuationsView extends ItemView {
 	// renderFormBody/switchScenario).
 	private recalculate(): void {
 		// Mutates this.state.mktCap as a side effect — see computeResultsForState.
-		this.results = computeResultsForState(this.state, this.moneyScale, this.sharesScale, this.plugin.settings.taxRate);
+		this.results = computeResultsForState(this.state, this.moneyScale, this.sharesScale, this.plugin.data.settings.taxRate);
 		// this.state is the same object as this.scenarios[activeScenario].state
 		// (mutated in place above), but results is a fresh object each call —
 		// write it back explicitly so the scenario map stays current.

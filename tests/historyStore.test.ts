@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { appendHistoryEntry, compactHistory, deleteHistoryEntry } from "../historyStore";
-import type { HistoryEntry } from "../valuationStore";
+import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry } from "../historyStore";
+import type { FormState, HistoryEntry, Results, Scenario, ScenarioKey } from "../valuationStore";
 
 // All timestamps built via local Date components (not raw epoch literals) so
 // the tests reason about calendar days/months the same way historyStore.ts
@@ -24,6 +24,99 @@ function fixtureEntry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
 		...overrides,
 	};
 }
+
+function fixtureState(overrides: Partial<FormState> = {}): FormState {
+	return {
+		ticker: "ACME",
+		price: "50",
+		shares: "100",
+		rfr: "4",
+		mrp: "5",
+		beta: "1.2",
+		intExp: "100",
+		totDebt: "1000",
+		taxRate: "25",
+		mktCap: "5000",
+		netDebt: "500",
+		growth1to5: "8",
+		growth6to10: "4",
+		terminalGrowth: "2",
+		fcf: "500",
+		eps: "5",
+		grahamGrowth: "8",
+		aaaYield: "4.4",
+		ocf: "1000",
+		capex: "400",
+		mainPct: "50",
+		...overrides,
+	};
+}
+
+function fixtureResults(overrides: Partial<Results> = {}): Results {
+	return {
+		wacc: 0.09,
+		dcfIv: 60,
+		dcfMos: 0.2,
+		impliedGrowth: 0.07,
+		grahamIv: 55,
+		grahamMos: 0.1,
+		tenCapIv: 45,
+		tenCapYield: 0.08,
+		tenCapMos: -0.1,
+		...overrides,
+	};
+}
+
+function fixtureScenarios(overrides: Partial<Record<ScenarioKey, Scenario>> = {}): Record<ScenarioKey, Scenario> {
+	return {
+		bear: { state: fixtureState(), results: fixtureResults({ dcfIv: 40, grahamIv: 45 }) },
+		base: { state: fixtureState(), results: fixtureResults({ dcfIv: 60, grahamIv: 55, tenCapIv: 45, impliedGrowth: 0.07 }) },
+		bull: { state: fixtureState(), results: fixtureResults({ dcfIv: 80, grahamIv: 65 }) },
+		...overrides,
+	};
+}
+
+describe("buildHistoryEntry", () => {
+	it("maps each scenario's DCF/Graham IV into its Bear/Base/Bull field", () => {
+		const entry = buildHistoryEntry(at(2024, 0, 15), fixtureScenarios());
+
+		expect(entry).toEqual(
+			fixtureEntry({
+				at: at(2024, 0, 15),
+				price: 50,
+				dcfBearIv: 40,
+				dcfBaseIv: 60,
+				dcfBullIv: 80,
+				grahamBearIv: 45,
+				grahamBaseIv: 55,
+				grahamBullIv: 65,
+				tenCapIv: 45,
+				impliedGrowth: 0.07,
+			})
+		);
+	});
+
+	it("reads price, Ten Cap IV, and implied growth off Base, ignoring Bear/Bull for those", () => {
+		const scenarios = fixtureScenarios({
+			base: { state: fixtureState({ price: "123.45" }), results: fixtureResults({ tenCapIv: 99, impliedGrowth: 0.11 }) },
+		});
+		const entry = buildHistoryEntry(Date.now(), scenarios);
+
+		expect(entry.price).toBe(123.45);
+		expect(entry.tenCapIv).toBe(99);
+		expect(entry.impliedGrowth).toBe(0.11);
+	});
+
+	it("falls back to 0 for an unparseable base price", () => {
+		const scenarios = fixtureScenarios({ base: { state: fixtureState({ price: "" }), results: fixtureResults() } });
+		expect(buildHistoryEntry(Date.now(), scenarios).price).toBe(0);
+	});
+
+	it("uses the given timestamp verbatim", () => {
+		const t = at(2024, 5, 1);
+		expect(buildHistoryEntry(t, fixtureScenarios()).at).toBe(t);
+	});
+});
 
 describe("appendHistoryEntry", () => {
 	it("starts a new timeline from undefined history", () => {

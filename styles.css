@@ -2188,6 +2188,14 @@ td.sv-num {
 	line-height: 1.5;
 }
 
+.sv-changelog-support {
+	margin-top: var(--size-4-5);
+	padding-top: var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
 .sv-docs-disclaimer {
 	background-color: rgba(var(--color-red-rgb, 224, 49, 49), 0.08);
 	border-left: 3px solid var(--color-red, #e03131);

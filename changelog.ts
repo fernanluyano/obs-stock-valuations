@@ -8,6 +8,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.9.0",
+		highlights: [
+			"🔁 \"Refresh prices\" now also records a Valuation history entry per ticker, not just an explicit Save — a refresh only ever moves price and what's derived from it (MoS, IV), but that's exactly what this timeline exists to track. Same same-day dedup and 6-month compaction apply, so refreshing repeatedly in one sitting still only keeps one entry per day",
+			"🗓️ The Valuation history section now shows its date range (oldest to newest entry) under the header",
+			"〰️ Smoothed out the \"Fair value vs. price\" chart lines for an easier-to-read trend",
+		],
+	},
+	{
 		version: "0.8.0",
 		highlights: [
 			"🔁 New \"Reverse DCF (implied growth)\" row in the results panel's Other metrics table — solves backward from today's price for the flat FCF growth rate the market is already assuming, a quick gut check against the company's own growth history and guidance",

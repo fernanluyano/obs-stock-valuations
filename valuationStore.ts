@@ -94,11 +94,12 @@ export interface SavedValuation {
 	// Preserved across form saves; removed only by explicitly unlinking it.
 	researchNotePath?: string;
 
-	// Saved-over-time timeline, appended to on every form Save (never on a
-	// price-only refresh) — see historyStore.ts. Omitted rather than an empty
-	// array once nothing's left, same convention as the optional fields
-	// above. Never written to the vault summary note (noteContent.ts reads
-	// only `scenarios`/`updatedAt`) — that note always reflects latest only.
+	// Saved-over-time timeline, appended to on every form Save and every price
+	// refresh — see buildHistoryEntry() in historyStore.ts. Omitted rather than
+	// an empty array once nothing's left, same convention as the optional
+	// fields above. Never written to the vault summary note (noteContent.ts
+	// reads only `scenarios`/`updatedAt`) — that note always reflects latest
+	// only.
 	history?: HistoryEntry[];
 }
 

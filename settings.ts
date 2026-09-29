@@ -77,10 +77,10 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setPlaceholder(DEFAULT_SETTINGS.valuationsNotePath)
-					.setValue(this.plugin.settings.valuationsNotePath)
+					.setValue(this.plugin.data.settings.valuationsNotePath)
 					.onChange(async (value) => {
-						this.plugin.settings.valuationsNotePath = value.trim() || DEFAULT_SETTINGS.valuationsNotePath;
-						await this.plugin.saveSettings();
+						this.plugin.data.settings.valuationsNotePath = value.trim() || DEFAULT_SETTINGS.valuationsNotePath;
+						await this.plugin.data.saveSettings();
 					})
 			);
 
@@ -142,14 +142,14 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 				"Adds a Research link to each saved valuation, pointing at any vault note you choose. Nothing about the note's contents or format is read or required."
 			)
 			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.enableResearchLinks).onChange(async (value) => {
-					this.plugin.settings.enableResearchLinks = value;
-					await this.plugin.saveSettings();
+				toggle.setValue(this.plugin.data.settings.enableResearchLinks).onChange(async (value) => {
+					this.plugin.data.settings.enableResearchLinks = value;
+					await this.plugin.data.saveSettings();
 					this.display();
 				})
 			);
 
-		if (this.plugin.settings.enableResearchLinks) {
+		if (this.plugin.data.settings.enableResearchLinks) {
 			new Setting(containerEl)
 				.setName("Research notes folder")
 				.setDesc(
@@ -158,11 +158,11 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 				.addText((text) =>
 					text
 						.setPlaceholder("e.g. investing/research")
-						.setValue(this.plugin.settings.researchNotesFolder)
+						.setValue(this.plugin.data.settings.researchNotesFolder)
 						.onChange(async (value) => {
 							const trimmed = normalizeFolderPath(value);
-							this.plugin.settings.researchNotesFolder = trimmed;
-							await this.plugin.saveSettings();
+							this.plugin.data.settings.researchNotesFolder = trimmed;
+							await this.plugin.data.saveSettings();
 							this.warnAboutResearchFolder(trimmed);
 						})
 				);
@@ -286,7 +286,7 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 					{
 						name: "Research notes folder",
 						desc: "Vault folder new research notes are created in. Required to activate the Research column above — left blank, the column stays hidden rather than falling back to a guessed location.",
-						visible: () => this.plugin.settings.enableResearchLinks,
+						visible: () => this.plugin.data.settings.enableResearchLinks,
 						control: {
 							type: "text",
 							key: "researchNotesFolder",
@@ -303,11 +303,11 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 	// persistence always goes through saveSettings() — this plugin's data.json
 	// stores { settings, valuations } together, not settings alone.
 	getControlValue(key: string): unknown {
-		return (this.plugin.settings as unknown as Record<string, unknown>)[key];
+		return (this.plugin.data.settings as unknown as Record<string, unknown>)[key];
 	}
 
 	setControlValue(key: string, value: unknown): void {
-		const settings = this.plugin.settings as unknown as Record<string, unknown>;
+		const settings = this.plugin.data.settings as unknown as Record<string, unknown>;
 		if (key === "valuationsNotePath") {
 			const trimmed = typeof value === "string" ? value.trim() : "";
 			settings[key] = trimmed || DEFAULT_SETTINGS.valuationsNotePath;
@@ -318,7 +318,7 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		} else {
 			settings[key] = value;
 		}
-		void this.plugin.saveSettings();
+		void this.plugin.data.saveSettings();
 	}
 
 	private numberDefinition(name: string, desc: string, key: NumberSettingKey): SettingGroupItem {
@@ -354,12 +354,12 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setPlaceholder(String(DEFAULT_SETTINGS[key]))
-					.setValue(String(this.plugin.settings[key]))
+					.setValue(String(this.plugin.data.settings[key]))
 					.onChange(async (value) => {
 						const parsed = parseFloat(value);
 						if (!isNaN(parsed)) {
-							this.plugin.settings[key] = parsed;
-							await this.plugin.saveSettings();
+							this.plugin.data.settings[key] = parsed;
+							await this.plugin.data.saveSettings();
 						}
 					})
 			);
@@ -373,9 +373,9 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 				for (const opt of SCALE_OPTIONS) {
 					dropdown.addOption(opt, SCALE_LABELS[opt]);
 				}
-				dropdown.setValue(this.plugin.settings[key]).onChange(async (value) => {
-					this.plugin.settings[key] = value as ScaleUnit;
-					await this.plugin.saveSettings();
+				dropdown.setValue(this.plugin.data.settings[key]).onChange(async (value) => {
+					this.plugin.data.settings[key] = value as ScaleUnit;
+					await this.plugin.data.saveSettings();
 				});
 			});
 	}

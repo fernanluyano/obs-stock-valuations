@@ -2,9 +2,9 @@ import type { FormState, Results, SavedValuation, ScenarioKey, ValuationTable } 
 import type { ScaleUnit } from "./units";
 
 // Bump whenever ValuationTable's on-disk shape changes. Read once on load
-// (main.ts's loadPluginData) to decide whether migration is needed at all —
-// keep that check a single number comparison, not a per-record shape probe,
-// so every load after the first migration stays cheap.
+// (DataRepository.load(), in dataRepository.ts) to decide whether migration
+// is needed at all — keep that check a single number comparison, not a
+// per-record shape probe, so every load after the first migration stays cheap.
 export const CURRENT_SCHEMA_VERSION = 2;
 
 // The on-disk shape before schema v2: one state/results pair per ticker,
