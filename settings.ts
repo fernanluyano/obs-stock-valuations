@@ -10,7 +10,7 @@ function normalizeFolderPath(value: string): string {
 	return value.trim().replace(/\/+$/, "");
 }
 
-type NumberSettingKey = "riskFreeRate" | "marketRiskPremium" | "taxRate" | "maintenanceCapexPct" | "aaaBondYield";
+type NumberSettingKey = "marketRiskPremium" | "taxRate" | "maintenanceCapexPct" | "aaaBondYield";
 
 type ScaleSettingKey = "defaultMoneyScale" | "defaultSharesScale";
 
@@ -19,7 +19,6 @@ type ScaleSettingKey = "defaultMoneyScale" | "defaultSharesScale";
 // All rates below are stored and entered as percentages (4 means 4%), matching how
 // they're normally quoted — not as decimals. The calculator divides by 100 internally.
 export interface StockValuationsSettings {
-	riskFreeRate: number; // 10-year Treasury yield, %
 	marketRiskPremium: number; // %
 	taxRate: number; // effective tax rate, used as a WACC fallback if never fetched or typed, %
 	maintenanceCapexPct: number; // Ten Cap's MainPct, %
@@ -36,7 +35,6 @@ export interface StockValuationsSettings {
 }
 
 export const DEFAULT_SETTINGS: StockValuationsSettings = {
-	riskFreeRate: 4.5,
 	marketRiskPremium: 5,
 	taxRate: 21,
 	maintenanceCapexPct: 50,
@@ -101,15 +99,10 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Default assumptions")
 			.setDesc(
-				"Pre-filled into the valuation calculator, except Tax rate — that field is left blank so \"Fetch data\" can always fill it in from SEC EDGAR; this value is used only as a fallback if you leave it blank and never fetch. Per-stock numbers (beta, EPS, shares, debt, price, ...) are always entered fresh."
+				"Pre-filled into the valuation calculator, except Tax rate — that field is left blank so \"Fetch data\" can always fill it in from SEC EDGAR; this value is used only as a fallback if you leave it blank and never fetch. Risk-free rate isn't here either — it's fetched automatically from Yahoo Finance (^TNX) and cached for 24 hours. Per-stock numbers (beta, EPS, shares, debt, price, ...) are always entered fresh."
 			)
 			.setHeading();
 
-		this.numberSetting(
-			"Risk-free rate (RFR, %)",
-			"10-year US Treasury yield, as a percentage (e.g. 4 = 4%).",
-			"riskFreeRate"
-		);
 		this.numberSetting(
 			"Market risk premium (MRP, %)",
 			"As a percentage (e.g. 5 = 5%).",
@@ -243,11 +236,6 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 				type: "group",
 				heading: "Default assumptions",
 				items: [
-					this.numberDefinition(
-						"Risk-free rate (RFR, %)",
-						"10-year US Treasury yield, as a percentage (e.g. 4 = 4%).",
-						"riskFreeRate"
-					),
 					this.numberDefinition(
 						"Market risk premium (MRP, %)",
 						"As a percentage (e.g. 5 = 5%).",

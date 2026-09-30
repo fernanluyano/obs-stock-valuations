@@ -9,7 +9,6 @@ import type { LegacySavedValuation } from "../migrations";
 // Obsidian (see historyStore.ts's comment for the same reasoning), so tests
 // can't import it directly.
 interface FixtureSettings {
-	riskFreeRate: number;
 	marketRiskPremium: number;
 	taxRate: number;
 	maintenanceCapexPct: number;
@@ -22,7 +21,6 @@ interface FixtureSettings {
 }
 
 const DEFAULT_SETTINGS: FixtureSettings = {
-	riskFreeRate: 4.5,
 	marketRiskPremium: 5,
 	taxRate: 21,
 	maintenanceCapexPct: 50,
@@ -142,7 +140,7 @@ describe("DataRepository.load", () => {
 		await repo.load();
 
 		expect(repo.settings.taxRate).toBe(30);
-		expect(repo.settings.riskFreeRate).toBe(DEFAULT_SETTINGS.riskFreeRate);
+		expect(repo.settings.maintenanceCapexPct).toBe(DEFAULT_SETTINGS.maintenanceCapexPct);
 	});
 
 	it("restores lastSeenVersion", async () => {
@@ -268,6 +266,88 @@ describe("DataRepository.saveSettings", () => {
 
 		expect((adapter.current as { settings: FixtureSettings }).settings.taxRate).toBe(33);
 		expect(syncNote).not.toHaveBeenCalled();
+	});
+});
+
+describe("DataRepository macro data caching", () => {
+	const macroRows = [{ month: "2026-09-01", cape: 40, trCape: 43, dividendYield: 0.01, tenYearYield: 4.6, sp500: 7600, realPrice: 7600 }];
+
+	async function loadedRepo(fetchMacro = vi.fn().mockResolvedValue(macroRows)) {
+		const adapter = fakeAdapter({ settings: {}, valuations: {}, schemaVersion: 2 });
+		const repo = new DataRepository(
+			adapter,
+			fixtureSettings(),
+			vi.fn().mockResolvedValue(undefined),
+			() => {},
+			() => Promise.resolve(null),
+			fetchMacro
+		);
+		await repo.load();
+		return { adapter, repo, fetchMacro };
+	}
+
+	it("getCachedMacroData is null until a fetch has ever succeeded", async () => {
+		const { repo } = await loadedRepo();
+		expect(repo.getCachedMacroData()).toBeNull();
+	});
+
+	it("refreshMacroData fetches, caches, and persists on first call", async () => {
+		const { adapter, repo, fetchMacro } = await loadedRepo();
+
+		const rows = await repo.refreshMacroData();
+
+		expect(rows).toEqual(macroRows);
+		expect(fetchMacro).toHaveBeenCalledTimes(1);
+		expect(repo.getCachedMacroData()).toEqual(macroRows);
+		expect(adapter.current).toMatchObject({ macroCache: { rows: macroRows } });
+	});
+
+	it("does not refetch within the 24h TTL", async () => {
+		const { repo, fetchMacro } = await loadedRepo();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+		await repo.refreshMacroData();
+		now.mockReturnValue(1_700_000_000_000 + 60 * 60 * 1000); // 1h later
+		const rows = await repo.refreshMacroData();
+
+		expect(fetchMacro).toHaveBeenCalledTimes(1);
+		expect(rows).toEqual(macroRows);
+		now.mockRestore();
+	});
+
+	it("refetches once the TTL has elapsed", async () => {
+		const { repo, fetchMacro } = await loadedRepo();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+		await repo.refreshMacroData();
+		now.mockReturnValue(1_700_000_000_000 + 25 * 60 * 60 * 1000); // 25h later
+		await repo.refreshMacroData();
+
+		expect(fetchMacro).toHaveBeenCalledTimes(2);
+		now.mockRestore();
+	});
+
+	it("a failed fetch falls back to whatever's already cached, without clearing it", async () => {
+		const fetchMacro = vi.fn().mockResolvedValueOnce(macroRows).mockResolvedValueOnce(null);
+		const { repo } = await loadedRepo(fetchMacro);
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+		await repo.refreshMacroData();
+		now.mockReturnValue(1_700_000_000_000 + 25 * 60 * 60 * 1000); // past the TTL, forces a refetch
+		const rows = await repo.refreshMacroData();
+
+		expect(rows).toEqual(macroRows);
+		expect(repo.getCachedMacroData()).toEqual(macroRows);
+		now.mockRestore();
+	});
+
+	it("a failed fetch with nothing ever cached returns null", async () => {
+		const { repo } = await loadedRepo(vi.fn().mockResolvedValue(null));
+
+		const rows = await repo.refreshMacroData();
+
+		expect(rows).toBeNull();
+		expect(repo.getCachedMacroData()).toBeNull();
 	});
 });
 

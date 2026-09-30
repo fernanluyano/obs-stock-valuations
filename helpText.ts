@@ -11,7 +11,7 @@ export const HELP_TEXT: Record<string, string> = {
 	price: "Current market price per share, in actual dollars — never scaled. Auto-fillable via \"Fetch data\" (Yahoo Finance) — an unofficial feed that can lag the real market; verify before relying on it.",
 	shares: "Diluted shares outstanding — includes the effect of options, RSUs, and convertibles." + SEC_NOTE,
 
-	rfr: "Risk-free rate (RFR): the 10-year US Treasury yield. Used as the base return in the cost-of-equity (CAPM) calculation.",
+	rfr: "Risk-free rate (RFR): the 10-year US Treasury yield. Pre-filled from a cached Yahoo Finance (^TNX) quote (refreshed at most once every 24 hours), and can be auto-filled via \"Fetch data\" the same as price — only into a blank/zero field, never overwriting a value you've typed. \"Refresh prices\" (the saved-valuations table button) always force-refreshes it across every saved ticker, unlike \"Fetch data\". Used as the base return in the cost-of-equity (CAPM) calculation.",
 	mrp: "Market risk premium (MRP): the extra return investors expect from stocks over the risk-free rate, typically ~5%.",
 	beta: "Beta: the stock's price volatility relative to the overall market. 1.0 = moves with the market; >1.0 = more volatile. Not available from either data source here — enter it manually.",
 	intExp: "Interest expense: the company's total interest paid on debt over the trailing twelve months." + SEC_NOTE,
@@ -39,4 +39,10 @@ export const HELP_TEXT: Record<string, string> = {
 	ocf: "Operating cash flow over the trailing twelve months." + SEC_NOTE,
 	capex: "Total capital expenditures over the trailing twelve months." + SEC_NOTE,
 	mainPct: "Maintenance capex %: the share of total capex that merely sustains the existing business (vs. funding growth). Used to isolate owner earnings.",
+
+	cape: "Shiller CAPE (cyclically-adjusted P/E, aka P/E10): the S&P 500's price divided by its average inflation-adjusted earnings over the trailing 10 years, smoothing out the single-year earnings swings (recessions, write-offs) that make an ordinary trailing P/E noisy. A high reading means the market is pricey relative to a decade of normalized earnings — not necessarily overvalued outright.",
+	trCape: "Total-return CAPE: the same calculation as CAPE, but with both the price and the trailing-earnings series adjusted as if dividends were reinvested. Plain CAPE is skewed by falling payout ratios over time (companies retaining more earnings instead of paying them out mechanically inflates recent earnings relative to decades ago) — TR-CAPE corrects for that, making it a fairer comparison across eras.",
+	dividendYield: "S&P 500 dividend yield for the month: trailing dividends divided by the (inflation-adjusted) price level.",
+	tenYearYield: "10-year US Treasury yield for the month, from Shiller's historical dataset — a monthly figure, unlike this plugin's own risk-free rate (RFR) field, which is a live daily Yahoo Finance quote.",
+	realPrice: "Nominal is the S&P 500's raw index level. Real (inflation-adjusted) restates it in constant dollars by dividing out CPI, so levels from different decades are actually comparable — the gap between the two lines is inflation, not real growth. Real, not nominal, is what CAPE's own price side is computed from.",
 };

@@ -35,3 +35,11 @@ export async function fetchQuotePrice(ticker: string): Promise<number | null> {
 	}
 	return null;
 }
+
+// ^TNX is Yahoo's ticker for the CBOE 10-Year Treasury Note Yield index, and
+// its regularMarketPrice is already the yield as a percentage (e.g. 4.52
+// means 4.52%) — the same shape the risk-free rate is used in throughout this
+// plugin, so no conversion is needed on the result.
+export function fetchRiskFreeRate(): Promise<number | null> {
+	return fetchQuotePrice("^TNX");
+}

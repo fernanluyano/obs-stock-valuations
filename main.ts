@@ -7,6 +7,8 @@ import {
 } from "./settings";
 import { syncValuationsNote } from "./noteSync";
 import { DataRepository } from "./dataRepository";
+import { fetchRiskFreeRate } from "./priceProvider";
+import { fetchMacroData } from "./macro";
 
 export default class StockValuationsPlugin extends Plugin {
 	data!: DataRepository;
@@ -23,7 +25,9 @@ export default class StockValuationsPlugin extends Plugin {
 					researchLinksActive(this.data.settings)
 				),
 			(_e) =>
-				new Notice("Saved, but couldn't update the vault summary note — check the note path in settings.")
+				new Notice("Saved, but couldn't update the vault summary note — check the note path in settings."),
+			fetchRiskFreeRate,
+			fetchMacroData
 		);
 		await this.data.load();
 

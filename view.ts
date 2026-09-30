@@ -37,6 +37,7 @@ import { calcDcfGrid, calcGrahamGrid, calcTenCapGrid, DcfInputs, GrahamInputs, m
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
+import type { MacroRow } from "./macro";
 import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundamentalsProvider";
 import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
@@ -244,7 +245,7 @@ function nearestIndex(values: number[], target: number): number {
 	return values.reduce((best, v, i) => (Math.abs(v - target) < Math.abs(values[best] - target) ? i : best), 0);
 }
 
-type Screen = "table" | "form" | "docs" | "changelog";
+type Screen = "table" | "form" | "docs" | "changelog" | "macro";
 
 // One sensitivity-grid cell coordinate — where a given scenario's "current
 // inputs" marker lands (see buildSensitivityGrid).
@@ -372,6 +373,7 @@ export class StockValuationsView extends ItemView {
 	// stockMosChart, rebuilt whenever the history section itself is (full
 	// render(), same as the table above).
 	private historyCharts: Chart[] = [];
+	private macroRefreshInFlight = false;
 	private static readonly PAGE_SIZE = 10;
 
 	constructor(leaf: WorkspaceLeaf, plugin: StockValuationsPlugin) {
@@ -419,6 +421,8 @@ export class StockValuationsView extends ItemView {
 			this.renderDocs(root);
 		} else if (this.screen === "changelog") {
 			this.renderChangelog(root);
+		} else if (this.screen === "macro") {
+			this.renderMacroScreen(root);
 		} else {
 			this.renderForm(root);
 		}
@@ -436,7 +440,7 @@ export class StockValuationsView extends ItemView {
 			price: "",
 			shares: "",
 
-			rfr: String(s.riskFreeRate),
+			rfr: String(this.plugin.data.getCachedRiskFreeRate()),
 			mrp: String(s.marketRiskPremium),
 			beta: "",
 			intExp: "",
@@ -570,6 +574,12 @@ export class StockValuationsView extends ItemView {
 	openDocs(): void {
 		this.screen = "docs";
 		this.render();
+	}
+
+	private openMacro(): void {
+		this.screen = "macro";
+		this.render();
+		void this.loadMacroData();
 	}
 
 	// Called once by the plugin on the first load after an update — shows
@@ -1034,6 +1044,12 @@ export class StockValuationsView extends ItemView {
 		docsBtn.createSpan({ text: "Help" });
 		setTooltip(docsBtn, "Help & methodology");
 		docsBtn.addEventListener("click", () => this.openDocs());
+
+		const macroBtn = headerActions.createEl("button", { cls: "sv-docs-btn mod-cta sv-macro-btn" });
+		setIcon(macroBtn.createSpan({ cls: "sv-docs-btn-icon" }), "trending-up");
+		macroBtn.createSpan({ text: "Macro" });
+		setTooltip(macroBtn, "Shiller CAPE and other market-wide valuation context — separate from per-ticker valuations");
+		macroBtn.addEventListener("click", () => this.openMacro());
 
 		const tickers = this.plugin.data.tickers();
 
@@ -1766,6 +1782,246 @@ export class StockValuationsView extends ItemView {
 	}
 
 	// ---------------------------------------------------------------------
+	// Macro screen — Shiller CAPE and market-wide context, separate from any
+	// single ticker's valuation. No cheap/fair/expensive verdict is rendered
+	// here on purpose (see plan.md) — just the current numbers and the raw
+	// history, left for the user to judge.
+	// ---------------------------------------------------------------------
+
+	private renderMacroScreen(root: HTMLElement): void {
+		const backRow = root.createDiv({ cls: "sv-back-row" });
+		const backBtn = backRow.createEl("button", { text: "← Back to table", cls: "sv-link-btn" });
+		backBtn.addEventListener("click", () => this.backToTable());
+
+		const rows = this.plugin.data.getCachedMacroData();
+
+		const header = root.createDiv({ cls: "sv-table-header" });
+		header.createEl("h2", { text: "Macro" });
+		if (rows && rows.length > 0) {
+			// "Last updated" here means the most recent data point's own date,
+			// not when this plugin last fetched it — the dataset itself only
+			// moves monthly (and only when the upstream fork's Action is
+			// manually re-run), so that's the freshness that actually matters.
+			const latestMonth = rows.reduce((max, r) => (r.month > max ? r.month : max), rows[0].month);
+			header.createEl("p", {
+				cls: "sv-chart-caption",
+				text: `Last updated: ${window.moment(latestMonth).format("MMMM YYYY")} — Shiller's data updates monthly, which is plenty for a value-investing view of the overall market.`,
+			});
+		}
+
+		const body = root.createDiv({ cls: "sv-macro-body" });
+		if (rows && rows.length > 0) {
+			this.renderMacroContent(body, rows);
+		} else {
+			body.createEl("p", { cls: "sv-empty-state", text: "Loading macro data…" });
+		}
+	}
+
+	// Fetches macro data if the cache is missing/stale (respects the 24h TTL —
+	// no manual override; this data only moves when the upstream fork's
+	// GitHub Action is re-run, which isn't something to expose a button for),
+	// and re-renders the macro screen with whatever comes back. Guards
+	// against clobbering a screen the user has since navigated away from.
+	private async loadMacroData(): Promise<void> {
+		if (this.macroRefreshInFlight) return;
+		this.macroRefreshInFlight = true;
+		try {
+			const rows = await this.plugin.data.refreshMacroData();
+			if (!rows || rows.length === 0) {
+				new Notice("Couldn't load macro data — check your connection and try again.");
+			}
+		} finally {
+			this.macroRefreshInFlight = false;
+		}
+		if (this.screen === "macro") this.render();
+	}
+
+	// Current-values readout plus two line charts (CAPE/TR-CAPE, and the 10y
+	// Treasury yield) over the same rolling window fetchMacroData filtered to.
+	// Same "?" help-button pattern as the calculator form's own fields
+	// (HELP_TEXT-driven, hover tooltip + tap-to-show Notice for mobile) —
+	// shared by the macro screen's stats and chart headings.
+	private appendHelpBtn(container: HTMLElement, helpKey: string): void {
+		const helpText = HELP_TEXT[helpKey];
+		if (!helpText) return;
+		const helpBtn = container.createSpan({ cls: "sv-help-btn", text: "?" });
+		helpBtn.setAttr("role", "button");
+		helpBtn.setAttr("tabindex", "0");
+		setTooltip(helpBtn, helpText, { placement: "top" });
+		const showHelp = (e: Event) => {
+			e.preventDefault();
+			new Notice(helpText, 8000);
+		};
+		helpBtn.addEventListener("click", showHelp);
+		helpBtn.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" || e.key === " ") showHelp(e);
+		});
+	}
+
+	private renderMacroContent(body: HTMLElement, rows: MacroRow[]): void {
+		const sorted = [...rows].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+		const latest = sorted[sorted.length - 1];
+
+		const stats = body.createDiv({ cls: "sv-macro-stats" });
+		const stat = (label: string, value: string, helpKey: string) => {
+			const cell = stats.createDiv({ cls: "sv-macro-stat" });
+			const labelGroup = cell.createDiv({ cls: "sv-field-label-group" });
+			labelGroup.createDiv({ cls: "sv-macro-stat-label", text: label });
+			this.appendHelpBtn(labelGroup, helpKey);
+			cell.createDiv({ cls: "sv-macro-stat-value", text: value });
+		};
+		stat("CAPE", latest.cape !== null ? latest.cape.toFixed(2) : "—", "cape");
+		stat("TR-CAPE", latest.trCape !== null ? latest.trCape.toFixed(2) : "—", "trCape");
+		stat("Dividend yield", latest.dividendYield !== null ? formatPercent(latest.dividendYield * 100) : "—", "dividendYield");
+		stat("10y Treasury yield", latest.tenYearYield !== null ? formatPercent(latest.tenYearYield) : "—", "tenYearYield");
+
+		const monthToMs = (month: string) => window.moment(month, "YYYY-MM-DD").valueOf();
+		const { mutedColor, borderColor } = this.chartThemeColors(body);
+		const firstAt = monthToMs(sorted[0].month);
+		const lastAt = monthToMs(sorted[sorted.length - 1].month);
+		const X_TICK_COUNT = 4;
+		const xTickValues =
+			firstAt === lastAt
+				? [firstAt]
+				: Array.from({ length: X_TICK_COUNT }, (_, i) => firstAt + ((lastAt - firstAt) * i) / (X_TICK_COUNT - 1));
+
+		const row = body.createDiv({ cls: "sv-chart-row" });
+
+		// Fixed hex colors, not theme-derived (--text-normal/--text-muted are
+		// both near-white in dark mode and render as indistinguishable gray
+		// lines) — same palette METHODS uses elsewhere so "which line is which"
+		// stays visually consistent with the rest of the plugin.
+		const capeCol = row.createDiv({ cls: "sv-chart-col" });
+		capeCol.createEl("h3", { text: "CAPE over time" });
+		this.renderMacroLineChart(
+			capeCol,
+			sorted,
+			[
+				{ label: "CAPE", field: "cape", color: "#4c8bf5" },
+				{ label: "TR-CAPE", field: "trCape", color: "#f2a541" },
+			],
+			(v) => v.toFixed(1),
+			{ firstAt, lastAt, xTickValues, mutedColor, borderColor }
+		);
+
+		const yieldCol = row.createDiv({ cls: "sv-chart-col" });
+		yieldCol.createEl("h3", { text: "10y Treasury yield over time" });
+		this.renderMacroLineChart(
+			yieldCol,
+			sorted,
+			[{ label: "10y yield", field: "tenYearYield", color: "#8d6fd1" }],
+			(v) => formatPercent(v, 1),
+			{ firstAt, lastAt, xTickValues, mutedColor, borderColor }
+		);
+
+		// Nominal vs. inflation-adjusted price — the gap between the two lines
+		// is exactly what "real" means: how much of the nominal index's rise is
+		// actual growth vs. just inflation. This is also what CAPE's own price
+		// side is computed from (real, not nominal). Only the last 10 years,
+		// not the full 40-year window the other two charts use — the full
+		// window compresses the recent, more relevant stretch into an
+		// unreadably short segment.
+		const TEN_YEARS_MS = 10 * 365.25 * 24 * 60 * 60 * 1000;
+		const last10y = sorted.filter((r) => monthToMs(r.month) >= lastAt - TEN_YEARS_MS);
+		const sp500FirstAt = monthToMs(last10y[0].month);
+		const sp500XTickValues =
+			sp500FirstAt === lastAt
+				? [sp500FirstAt]
+				: Array.from(
+						{ length: X_TICK_COUNT },
+						(_, i) => sp500FirstAt + ((lastAt - sp500FirstAt) * i) / (X_TICK_COUNT - 1)
+				  );
+
+		const sp500Row = body.createDiv({ cls: "sv-chart-row" });
+		const sp500Col = sp500Row.createDiv({ cls: "sv-chart-col sv-chart-col-half" });
+		const sp500Heading = sp500Col.createDiv({ cls: "sv-field-label-group" });
+		sp500Heading.createEl("h3", { text: "S&P 500: nominal vs. inflation-adjusted (10y)" });
+		this.appendHelpBtn(sp500Heading, "realPrice");
+		sp500Col.createEl("p", {
+			cls: "sv-chart-caption",
+			text: "The gap between the two lines is inflation — the real line is what CAPE's own price side is computed from, not the nominal one.",
+		});
+		this.renderMacroLineChart(
+			sp500Col,
+			last10y,
+			[
+				{ label: "S&P 500 (nominal)", field: "sp500", color: "#4c8bf5" },
+				{ label: "S&P 500 (real)", field: "realPrice", color: "#f2a541" },
+			],
+			(v) => v.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+			{ firstAt: sp500FirstAt, lastAt, xTickValues: sp500XTickValues, mutedColor, borderColor }
+		);
+	}
+
+	private renderMacroLineChart(
+		col: HTMLElement,
+		sorted: MacroRow[],
+		series: { label: string; field: "cape" | "trCape" | "tenYearYield" | "sp500" | "realPrice"; color: string }[],
+		formatY: (v: number) => string,
+		axis: { firstAt: number; lastAt: number; xTickValues: number[]; mutedColor: string; borderColor: string }
+	): void {
+		const wrap = col.createDiv({ cls: "sv-chart-canvas-wrap" });
+		wrap.setCssStyles({ height: "220px" });
+		const canvas = wrap.createEl("canvas");
+
+		const chart = new Chart(canvas, {
+			type: "line",
+			data: {
+				datasets: series.map((s) => ({
+					label: s.label,
+					data: sorted
+						.filter((r) => r[s.field] !== null)
+						.map((r) => ({ x: window.moment(r.month, "YYYY-MM-DD").valueOf(), y: r[s.field] as number })),
+					borderColor: s.color,
+					backgroundColor: s.color,
+					borderWidth: 2,
+					pointRadius: 0,
+					tension: 0.2,
+				})),
+			},
+			options: {
+				responsive: true,
+				maintainAspectRatio: false,
+				interaction: { mode: "index", intersect: false },
+				scales: {
+					x: {
+						type: "linear",
+						min: axis.firstAt,
+						max: axis.lastAt,
+						bounds: "data",
+						afterBuildTicks: (a) => {
+							a.ticks = axis.xTickValues.map((value) => ({ value }));
+						},
+						grid: { color: axis.borderColor },
+						ticks: {
+							color: axis.mutedColor,
+							maxRotation: 0,
+							callback: (v) => window.moment(Number(v)).format("YYYY"),
+						},
+					},
+					y: {
+						grid: { color: axis.borderColor },
+						ticks: { color: axis.mutedColor, callback: (v) => formatY(Number(v)) },
+					},
+				},
+				plugins: {
+					legend: {
+						display: series.length > 1,
+						labels: { color: axis.mutedColor },
+					},
+					tooltip: {
+						callbacks: {
+							title: (items) => (items[0] ? window.moment(items[0].parsed.x).format("YYYY-MM") : ""),
+							label: (ctx) => `${ctx.dataset.label}: ${formatY(Number(ctx.parsed.y))}`,
+						},
+					},
+				},
+			},
+		});
+		this.charts.push(chart);
+	}
+
+	// ---------------------------------------------------------------------
 	// Form screen — add or edit a single ticker's inputs.
 	// ---------------------------------------------------------------------
 
@@ -2279,13 +2535,16 @@ export class StockValuationsView extends ItemView {
 		return raw.trim() === "" || isNaN(parsed) || parsed === 0;
 	}
 
-	// The single entry point for pulling in outside data: price from Yahoo
-	// Finance, everything else from SEC EDGAR. Always talks to the network
-	// through fetchQuotePrice / secHttpGet (both wrap Obsidian's requestUrl),
-	// which works the same way on mobile as on desktop — unlike a browser
-	// fetch(), it isn't blocked by CORS or the mobile webview. Every field it
-	// touches follows the same blank-or-zero rule as isBlankOrZero — see also
-	// the legend text above the form and this button's tooltip.
+	// The single entry point for pulling in outside data: price and the
+	// risk-free rate from Yahoo Finance, everything else from SEC EDGAR.
+	// Always talks to the network through fetchQuotePrice / secHttpGet (both
+	// wrap Obsidian's requestUrl), which works the same way on mobile as on
+	// desktop — unlike a browser fetch(), it isn't blocked by CORS or the
+	// mobile webview. Every field it touches follows the same blank-or-zero
+	// rule as isBlankOrZero — see also the legend text above the form and
+	// this button's tooltip. RFR's cache still forces a fresh fetch when
+	// "Refresh prices" (the table button, not this one) is clicked — see
+	// refreshAllPrices.
 	private async fetchAllIntoForm(btn: HTMLButtonElement): Promise<void> {
 		const ticker = this.state.ticker.trim();
 		if (!ticker) {
@@ -2317,6 +2576,14 @@ export class StockValuationsView extends ItemView {
 				}
 			} else {
 				keptExisting.push("Current price");
+			}
+
+			if (this.isBlankOrZero("rfr")) {
+				const rfr = await this.plugin.data.refreshRiskFreeRate();
+				this.setStateField("rfr", this.roundForField(rfr));
+				filled.push("Risk-free rate");
+			} else {
+				keptExisting.push("Risk-free rate");
 			}
 
 			const result = await fetchFundamentals(ticker, secHttpGet);
@@ -2396,15 +2663,16 @@ export class StockValuationsView extends ItemView {
 		new Notice(`${entityLabel}: ${parts.join(" ")}`, 15000);
 	}
 
-	// Refreshes just the price for every saved valuation (table button, not the
-	// per-ticker form) — no fundamentals are touched. Everything price-derived
-	// is recomputed off the new price: MoS and Ten Cap yield always; market cap
-	// too (price × shares), which in turn moves WACC and DCF IV. Graham and Ten
-	// Cap IV don't depend on WACC/market cap, so those stay fixed. Also appends
-	// a history entry per ticker (see buildHistoryEntry) — MoS/IV moving with
-	// price is exactly what the history timeline exists to track, and
-	// appendHistoryEntry's same-day dedup means refreshing repeatedly in one
-	// sitting still only ever keeps one entry for that day.
+	// Refreshes the price and the risk-free rate for every saved valuation
+	// (table button, not the per-ticker form) — no other fundamentals are
+	// touched. Everything price/RFR-derived is recomputed: MoS and Ten Cap
+	// yield always; market cap too (price × shares), which along with RFR
+	// moves WACC and DCF IV. Graham and Ten Cap IV don't depend on WACC/market
+	// cap, so those stay fixed. Also appends a history entry per ticker (see
+	// buildHistoryEntry) — MoS/IV moving with price is exactly what the
+	// history timeline exists to track, and appendHistoryEntry's same-day
+	// dedup means refreshing repeatedly in one sitting still only ever keeps
+	// one entry for that day.
 	private async refreshAllPrices(btn: HTMLButtonElement, label: HTMLElement): Promise<void> {
 		const tickers = this.plugin.data.tickers().sort();
 		if (tickers.length === 0 || this.priceRefreshInFlight) return;
@@ -2416,6 +2684,11 @@ export class StockValuationsView extends ItemView {
 
 		let updated = 0;
 		const failed: string[] = [];
+
+		// RFR isn't per-ticker — fetched (or forced-refreshed from Yahoo, bypassing
+		// the 24h cache since this is an explicit manual refresh) once outside the
+		// loop below and applied to every saved valuation.
+		const rfr = this.roundForField(await this.plugin.data.refreshRiskFreeRate(true));
 
 		try {
 			for (const ticker of tickers) {
@@ -2431,6 +2704,7 @@ export class StockValuationsView extends ItemView {
 				// refresh keeps them in sync rather than silently desyncing them.
 				for (const scenario of Object.values(record.scenarios)) {
 					scenario.state.price = this.roundForField(price);
+					scenario.state.rfr = rfr;
 					scenario.results = computeResultsForState(
 						scenario.state,
 						record.moneyScale,

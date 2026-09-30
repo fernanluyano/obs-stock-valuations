@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "0.10.0",
+		highlights: [
+			"📊 New \"Macro\" screen — Shiller CAPE, TR-CAPE, dividend yield, and 10-year Treasury yield as of the latest month, plus three charts: CAPE/TR-CAPE over time, 10-year yield over time (both over a rolling 40-year window), and S&P 500 nominal vs. inflation-adjusted over the last 10 years. No cheap/fair/expensive verdict — just the numbers and the history, left for you to judge",
+			"🔁 Risk-free rate (RFR) is no longer a Settings default — it's now fetched live from Yahoo Finance (^TNX) and cached for 24 hours, the same as price. \"Refresh prices\" force-refreshes it across every saved ticker, and \"Fetch data\" fills it the same way as any other auto-fillable field",
+		],
+	},
+	{
 		version: "0.9.0",
 		highlights: [
 			"🔁 \"Refresh prices\" now also records a Valuation history entry per ticker, not just an explicit Save — a refresh only ever moves price and what's derived from it (MoS, IV), but that's exactly what this timeline exists to track. Same same-day dedup and 6-month compaction apply, so refreshing repeatedly in one sitting still only keeps one entry per day",

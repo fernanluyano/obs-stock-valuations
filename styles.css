@@ -2027,6 +2027,29 @@ td.sv-num {
 	border-radius: var(--radius-s);
 }
 
+.sv-macro-body {
+	margin-top: var(--size-4-4);
+}
+
+.sv-macro-stats {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-8);
+	margin-bottom: var(--size-4-2);
+}
+
+.sv-macro-stat-label {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.sv-macro-stat-value {
+	font-family: var(--sv-mono);
+	font-variant-numeric: tabular-nums;
+	font-size: 1.4rem;
+	color: var(--text-normal);
+}
+
 /* Chart — standalone section below the table */
 
 .sv-chart-section {
@@ -2055,6 +2078,14 @@ td.sv-num {
 
 .sv-chart-col {
 	flex: 1 1 320px;
+	min-width: 280px;
+}
+
+/* A lone column that should still only take up half its row (not stretch to
+   fill it via flex-grow) — the standalone S&P 500 chart, kept the same width
+   as the two-up CAPE/yield charts above it instead of reading as full-width. */
+.sv-chart-col-half {
+	flex: 0 1 50%;
 	min-width: 280px;
 }
 
@@ -2155,6 +2186,20 @@ td.sv-num {
 
 .sv-docs-btn-icon {
 	display: inline-flex;
+}
+
+/* Macro gets its own accent color instead of the shared interactive-accent
+   mod-cta above — it's a standalone screen, not another action on this
+   table, so it shouldn't read as visually interchangeable with Refresh/New
+   valuation. More specific than .sv-docs-btn.mod-cta so it wins. */
+.sv-macro-btn.mod-cta {
+	background-color: var(--color-orange, #e8793a);
+	color: var(--text-on-accent);
+}
+
+.sv-macro-btn.mod-cta:hover {
+	background-color: var(--color-orange, #e8793a);
+	filter: brightness(1.1);
 }
 
 .sv-stale-btn {
