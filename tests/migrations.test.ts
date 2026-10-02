@@ -29,6 +29,9 @@ function fixtureState(overrides: Partial<FormState> = {}): FormState {
 		ocf: "1000",
 		capex: "400",
 		mainPct: "50",
+
+		dps: "",
+		ddmGrowth: "",
 		...overrides,
 	};
 }
@@ -44,6 +47,10 @@ function fixtureResults(overrides: Partial<Results> = {}): Results {
 		tenCapIv: 45,
 		tenCapYield: 0.08,
 		tenCapMos: -0.1,
+		ddmIv: NaN,
+		ddmMos: NaN,
+		costOfEquity: 0.1,
+		paybackYears: 7,
 		...overrides,
 	};
 }

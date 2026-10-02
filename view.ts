@@ -33,16 +33,29 @@ import {
 } from "tabulator-tables";
 import type { CellComponent, ColumnDefinition } from "tabulator-tables";
 import type StockValuationsPlugin from "./main";
-import { calcDcfGrid, calcGrahamGrid, calcTenCapGrid, DcfInputs, GrahamInputs, marginOfSafety, TenCapInputs } from "./calculations";
+import {
+	calcDcfGrid,
+	calcDdmGrid,
+	calcGrahamGrid,
+	calcTenCapGrid,
+	DcfInputs,
+	DdmInputs,
+	GrahamInputs,
+	hasIntrinsicValue,
+	marginOfSafety,
+	paybackTone,
+	PaybackTone,
+	TenCapInputs,
+} from "./calculations";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
 import type { MacroRow } from "./macro";
 import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundamentalsProvider";
 import { secHttpGet } from "./secHttp";
-import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "./format";
+import { formatCurrency, formatPercent, formatWithCommas, formatYears, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
-import { FormState, HistoryEntry, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
+import { FormState, HistoryEntry, historyIv, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
 import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry } from "./historyStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS, VALUATION_HISTORY_DOC } from "./docs";
 import { getChangelogEntry } from "./changelog";
@@ -75,6 +88,7 @@ const METHODS = [
 	{ label: "DCF", color: "#4c8bf5", mosKey: "dcfMos", ivKey: "dcfIv" },
 	{ label: "Graham", color: "#f2a541", mosKey: "grahamMos", ivKey: "grahamIv" },
 	{ label: "Ten Cap", color: "#8d6fd1", mosKey: "tenCapMos", ivKey: "tenCapIv" },
+	{ label: "DDM", color: "#2bb3a3", mosKey: "ddmMos", ivKey: "ddmIv" },
 ] as const satisfies { label: string; color: string; mosKey: keyof Results; ivKey: keyof Results }[];
 
 // Display order for the scenario tabs/selector — optimistic to pessimistic,
@@ -87,14 +101,21 @@ const SCENARIO_TOOLTIPS: Record<ScenarioKey, string> = {
 	bear: "Pessimistic assumptions.",
 };
 
-// Which HistoryEntry fields hold DCF/Graham's fair value for a given
+// Which HistoryEntry fields hold DCF/Graham/DDM's fair value for a given
 // scenario — used by renderHistoryChart to draw one "fair value vs. price"
 // chart per scenario. Ten Cap and price have no scenario-specific value (see
-// SCENARIO_SPECIFIC_FIELDS), so only DCF/Graham vary here.
-const HISTORY_SCENARIO_FIELDS: Record<ScenarioKey, { dcf: keyof HistoryEntry; graham: keyof HistoryEntry }> = {
-	bull: { dcf: "dcfBullIv", graham: "grahamBullIv" },
-	base: { dcf: "dcfBaseIv", graham: "grahamBaseIv" },
-	bear: { dcf: "dcfBearIv", graham: "grahamBearIv" },
+// SCENARIO_SPECIFIC_FIELDS), so only DCF/Graham/DDM vary here.
+const HISTORY_SCENARIO_FIELDS: Record<
+	ScenarioKey,
+	{
+		dcf: "dcfBullIv" | "dcfBaseIv" | "dcfBearIv";
+		graham: "grahamBullIv" | "grahamBaseIv" | "grahamBearIv";
+		ddm: "ddmBullIv" | "ddmBaseIv" | "ddmBearIv";
+	}
+> = {
+	bull: { dcf: "dcfBullIv", graham: "grahamBullIv", ddm: "ddmBullIv" },
+	base: { dcf: "dcfBaseIv", graham: "grahamBaseIv", ddm: "ddmBaseIv" },
+	bear: { dcf: "dcfBearIv", graham: "grahamBearIv", ddm: "ddmBearIv" },
 };
 
 function cloneScenario(s: Scenario): Scenario {
@@ -112,6 +133,7 @@ const SCENARIO_SPECIFIC_FIELDS: ReadonlySet<keyof FormState> = new Set([
 	"growth6to10",
 	"terminalGrowth",
 	"grahamGrowth",
+	"ddmGrowth",
 ]);
 
 // One flat row per ticker for the Tabulator table — every IV/MoS value for
@@ -135,6 +157,12 @@ interface TableRow {
 	grahamBaseMos: number;
 	grahamBullIv: number;
 	grahamBullMos: number;
+	ddmBearIv: number;
+	ddmBearMos: number;
+	ddmBaseIv: number;
+	ddmBaseMos: number;
+	ddmBullIv: number;
+	ddmBullMos: number;
 	price: number;
 	updatedAt: number;
 	// 0 (sorts/reads as "infinitely stale") for records never explicitly
@@ -169,6 +197,12 @@ function buildTableRow(ticker: string, saved: SavedValuation): TableRow {
 		grahamBaseMos: base.results.grahamMos,
 		grahamBullIv: bull.results.grahamIv,
 		grahamBullMos: bull.results.grahamMos,
+		ddmBearIv: bear.results.ddmIv,
+		ddmBearMos: bear.results.ddmMos,
+		ddmBaseIv: base.results.ddmIv,
+		ddmBaseMos: base.results.ddmMos,
+		ddmBullIv: bull.results.ddmIv,
+		ddmBullMos: bull.results.ddmMos,
 		price: parseFloat(base.state.price) || 0,
 		updatedAt: saved.updatedAt,
 		lastPriceRefreshAt: saved.lastPriceRefreshAt ?? 0,
@@ -215,27 +249,52 @@ interface HistoryRow {
 	tenCapIv: number;
 	tenCapMos: number;
 	impliedGrowth: number;
+	ddmBearIv: number;
+	ddmBearMos: number;
+	ddmBaseIv: number;
+	ddmBaseMos: number;
+	ddmBullIv: number;
+	ddmBullMos: number;
 }
 
 function buildHistoryRow(entry: HistoryEntry): HistoryRow {
+	// Stored values may be null (recorded as NaN — see HistoryIv) or, for
+	// DDM on entries from before it existed, missing — historyIv turns both
+	// into NaN, so they render as "—".
+	const dcfBearIv = historyIv(entry.dcfBearIv);
+	const dcfBaseIv = historyIv(entry.dcfBaseIv);
+	const dcfBullIv = historyIv(entry.dcfBullIv);
+	const grahamBearIv = historyIv(entry.grahamBearIv);
+	const grahamBaseIv = historyIv(entry.grahamBaseIv);
+	const grahamBullIv = historyIv(entry.grahamBullIv);
+	const tenCapIv = historyIv(entry.tenCapIv);
+	const ddmBearIv = historyIv(entry.ddmBearIv);
+	const ddmBaseIv = historyIv(entry.ddmBaseIv);
+	const ddmBullIv = historyIv(entry.ddmBullIv);
 	return {
 		at: entry.at,
 		price: entry.price,
-		dcfBearIv: entry.dcfBearIv,
-		dcfBearMos: marginOfSafety(entry.dcfBearIv, entry.price),
-		dcfBaseIv: entry.dcfBaseIv,
-		dcfBaseMos: marginOfSafety(entry.dcfBaseIv, entry.price),
-		dcfBullIv: entry.dcfBullIv,
-		dcfBullMos: marginOfSafety(entry.dcfBullIv, entry.price),
-		grahamBearIv: entry.grahamBearIv,
-		grahamBearMos: marginOfSafety(entry.grahamBearIv, entry.price),
-		grahamBaseIv: entry.grahamBaseIv,
-		grahamBaseMos: marginOfSafety(entry.grahamBaseIv, entry.price),
-		grahamBullIv: entry.grahamBullIv,
-		grahamBullMos: marginOfSafety(entry.grahamBullIv, entry.price),
-		tenCapIv: entry.tenCapIv,
-		tenCapMos: marginOfSafety(entry.tenCapIv, entry.price),
-		impliedGrowth: entry.impliedGrowth,
+		dcfBearIv,
+		dcfBearMos: marginOfSafety(dcfBearIv, entry.price),
+		dcfBaseIv,
+		dcfBaseMos: marginOfSafety(dcfBaseIv, entry.price),
+		dcfBullIv,
+		dcfBullMos: marginOfSafety(dcfBullIv, entry.price),
+		grahamBearIv,
+		grahamBearMos: marginOfSafety(grahamBearIv, entry.price),
+		grahamBaseIv,
+		grahamBaseMos: marginOfSafety(grahamBaseIv, entry.price),
+		grahamBullIv,
+		grahamBullMos: marginOfSafety(grahamBullIv, entry.price),
+		tenCapIv,
+		tenCapMos: marginOfSafety(tenCapIv, entry.price),
+		impliedGrowth: historyIv(entry.impliedGrowth),
+		ddmBearIv,
+		ddmBearMos: marginOfSafety(ddmBearIv, entry.price),
+		ddmBaseIv,
+		ddmBaseMos: marginOfSafety(ddmBaseIv, entry.price),
+		ddmBullIv,
+		ddmBullMos: marginOfSafety(ddmBullIv, entry.price),
 	};
 }
 
@@ -362,6 +421,12 @@ export class StockValuationsView extends ItemView {
 	private grahamSensitivityWrapEl!: HTMLElement;
 	private tenCapSensitivityTabulator: Tabulator | null = null;
 	private tenCapSensitivityWrapEl!: HTMLElement;
+	private ddmSensitivityTabulator: Tabulator | null = null;
+	private ddmSensitivityWrapEl!: HTMLElement;
+	// The whole "Sensitivity" section — hidden when no method has a value
+	// (see updateSensitivityVisibility), so a blank form doesn't show a header
+	// over nothing.
+	private sensitivitySectionEl!: HTMLElement;
 	private tabulator: Tabulator | null = null;
 	// Per-ticker "Valuation history" table on the form screen — same
 	// paginated/sortable Tabulator as `tabulator` above, just a second
@@ -428,14 +493,13 @@ export class StockValuationsView extends ItemView {
 		}
 	}
 
-	private resetForm(): void {
+	// A fresh form's state: blank, apart from the Settings-defaulted fields.
+	// Also the base loadIntoForm lays a saved record over, so a field added
+	// after that record was saved (e.g. the DDM's dps/ddmGrowth) comes up
+	// blank instead of undefined — no schema migration needed for new fields.
+	private blankFormState(): FormState {
 		const s = this.plugin.data.settings;
-		this.originalTicker = null;
-		this.moneyScale = s.defaultMoneyScale;
-		this.sharesScale = s.defaultSharesScale;
-		this.activeScenario = "base";
-
-		const blankState = (): FormState => ({
+		return {
 			ticker: "",
 			price: "",
 			shares: "",
@@ -465,11 +529,22 @@ export class StockValuationsView extends ItemView {
 			ocf: "",
 			capex: "",
 			mainPct: String(s.maintenanceCapexPct),
-		});
+
+			dps: "",
+			ddmGrowth: "",
+		};
+	}
+
+	private resetForm(): void {
+		const s = this.plugin.data.settings;
+		this.originalTicker = null;
+		this.moneyScale = s.defaultMoneyScale;
+		this.sharesScale = s.defaultSharesScale;
+		this.activeScenario = "base";
 
 		this.scenarios = {} as Record<ScenarioKey, Scenario>;
 		for (const key of SCENARIO_KEYS) {
-			const state = blankState();
+			const state = this.blankFormState();
 			this.scenarios[key] = {
 				state,
 				results: computeResultsForState(state, this.moneyScale, this.sharesScale, s.taxRate),
@@ -489,7 +564,9 @@ export class StockValuationsView extends ItemView {
 
 		this.scenarios = {} as Record<ScenarioKey, Scenario>;
 		for (const key of SCENARIO_KEYS) {
-			this.scenarios[key] = cloneScenario(saved.scenarios[key]);
+			const scenario = cloneScenario(saved.scenarios[key]);
+			scenario.state = { ...this.blankFormState(), ...scenario.state };
+			this.scenarios[key] = scenario;
 		}
 
 		// Base is the source of truth for every shared fact. Force Bull/Bear's
@@ -497,13 +574,17 @@ export class StockValuationsView extends ItemView {
 		// before facts were shared (or edited under an older build) could still
 		// have its own divergent values, and "inherited from Base" needs to be
 		// true the moment the form opens, not just prospectively from here on.
+		// Base's results are recomputed too (from its own unchanged state), so
+		// a record saved by an older build picks up any result field added
+		// since — e.g. paybackYears — instead of rendering it as undefined.
 		const factKeys = (Object.keys(this.scenarios.base.state) as (keyof FormState)[]).filter(
 			(k) => !SCENARIO_SPECIFIC_FIELDS.has(k)
 		);
 		for (const key of SCENARIO_KEYS) {
-			if (key === "base") continue;
-			for (const field of factKeys) {
-				this.scenarios[key].state[field] = this.scenarios.base.state[field];
+			if (key !== "base") {
+				for (const field of factKeys) {
+					this.scenarios[key].state[field] = this.scenarios.base.state[field];
+				}
 			}
 			this.scenarios[key].results = computeResultsForState(
 				this.scenarios[key].state,
@@ -703,7 +784,7 @@ export class StockValuationsView extends ItemView {
 						const compacted = compactHistory(saved.history, Date.now());
 						if (compacted.length > 0) saved.history = compacted;
 						else delete saved.history;
-						void this.plugin.data.persistValuations();
+						void this.plugin.data.persistValuations([ticker]);
 						// Full re-render, same as every other data-mutating action on
 						// this screen (delete/link/unlink) — simplest way to keep the
 						// table, its pagination, and the Compact button's visibility
@@ -769,7 +850,7 @@ export class StockValuationsView extends ItemView {
 						const remaining = deleteHistoryEntry(saved.history, row.at);
 						if (remaining.length > 0) saved.history = remaining;
 						else delete saved.history;
-						void this.plugin.data.persistValuations();
+						void this.plugin.data.persistValuations([ticker]);
 						this.render();
 					},
 					"Delete"
@@ -853,6 +934,27 @@ export class StockValuationsView extends ItemView {
 				responsive: 3,
 			},
 			{
+				title: "DDM Bear",
+				field: "ddmBearMos",
+				formatter: ivMosFormatter<HistoryRow>("ddmBearIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "DDM Base",
+				field: "ddmBaseMos",
+				formatter: ivMosFormatter<HistoryRow>("ddmBaseIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 1,
+			},
+			{
+				title: "DDM Bull",
+				field: "ddmBullMos",
+				formatter: ivMosFormatter<HistoryRow>("ddmBullIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
 				title: "Price",
 				field: "price",
 				formatter: (cell) => formatCurrency(cell.getValue() as number),
@@ -908,6 +1010,7 @@ export class StockValuationsView extends ItemView {
 		const dcfMethod = METHODS.find((m) => m.label === "DCF")!;
 		const grahamMethod = METHODS.find((m) => m.label === "Graham")!;
 		const tenCapMethod = METHODS.find((m) => m.label === "Ten Cap")!;
+		const ddmMethod = METHODS.find((m) => m.label === "DDM")!;
 
 		// One shared legend above all three charts instead of tripling it —
 		// the colors mean the same thing in every one.
@@ -922,6 +1025,7 @@ export class StockValuationsView extends ItemView {
 		legendItem(dcfMethod.color, "DCF");
 		legendItem(grahamMethod.color, "Graham");
 		legendItem(tenCapMethod.color, "Ten Cap");
+		legendItem(ddmMethod.color, "DDM");
 
 		const sorted = [...history].sort((a, b) => a.at - b.at);
 		const firstAt = sorted[0].at;
@@ -983,6 +1087,17 @@ export class StockValuationsView extends ItemView {
 							data: sorted.map((e) => ({ x: e.at, y: e.tenCapIv })),
 							borderColor: tenCapMethod.color,
 							backgroundColor: tenCapMethod.color,
+							borderWidth: 1.5,
+							pointRadius: 1.5,
+							tension: 0.4,
+						},
+						{
+							label: "DDM",
+							// NaN (Chart.js skips it, leaving a gap) for non-payers and
+							// for entries recorded before the DDM existed.
+							data: sorted.map((e) => ({ x: e.at, y: e[fields.ddm] ?? NaN })),
+							borderColor: ddmMethod.color,
+							backgroundColor: ddmMethod.color,
 							borderWidth: 1.5,
 							pointRadius: 1.5,
 							tension: 0.4,
@@ -1109,8 +1224,8 @@ export class StockValuationsView extends ItemView {
 		const chartsWrap = root.createDiv();
 
 		// Ten Cap has no scenario lever (shared facts only — see
-		// SCENARIO_SPECIFIC_FIELDS), so it's a single merged IV/MoS column. DCF
-		// and Graham each get a "IV / MoS" group with Bear/Base/Bull
+		// SCENARIO_SPECIFIC_FIELDS), so it's a single merged IV/MoS column. DCF,
+		// Graham, and DDM each get a "IV / MoS" group with Bear/Base/Bull
 		// sub-columns — explicit labels, IV and MoS packed into the same cell
 		// (ivMosFormatter) rather than IV living in its own column.
 		// `responsive` (higher = hidden sooner) keeps Symbol, each method's Base
@@ -1195,6 +1310,27 @@ export class StockValuationsView extends ItemView {
 				title: "Graham Bull",
 				field: "grahamBullMos",
 				formatter: ivMosFormatter<TableRow>("grahamBullIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "DDM Bear",
+				field: "ddmBearMos",
+				formatter: ivMosFormatter<TableRow>("ddmBearIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 3,
+			},
+			{
+				title: "DDM Base",
+				field: "ddmBaseMos",
+				formatter: ivMosFormatter<TableRow>("ddmBaseIv"),
+				cssClass: "sv-num sv-scenario-col sv-subheader",
+				responsive: 1,
+			},
+			{
+				title: "DDM Bull",
+				field: "ddmBullMos",
+				formatter: ivMosFormatter<TableRow>("ddmBullIv"),
 				cssClass: "sv-num sv-scenario-col sv-subheader",
 				responsive: 3,
 			},
@@ -1328,7 +1464,8 @@ export class StockValuationsView extends ItemView {
 					`Remove the research link for ${ticker}? "${file.basename}" itself won't be touched.`,
 					() => {
 						delete saved.researchNotePath;
-						void this.plugin.data.persistValuations();
+						// Research links aren't in the history note — nothing to rewrite.
+						void this.plugin.data.persistValuations([]);
 						this.render();
 					},
 					"Remove link"
@@ -1605,6 +1742,8 @@ export class StockValuationsView extends ItemView {
 		this.grahamSensitivityTabulator = null;
 		this.tenCapSensitivityTabulator?.destroy();
 		this.tenCapSensitivityTabulator = null;
+		this.ddmSensitivityTabulator?.destroy();
+		this.ddmSensitivityTabulator = null;
 	}
 
 	// ---------------------------------------------------------------------
@@ -1654,7 +1793,8 @@ export class StockValuationsView extends ItemView {
 		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return;
 		saved.researchNotePath = path;
-		void this.plugin.data.persistValuations();
+		// Research links aren't in the history note — nothing to rewrite.
+		void this.plugin.data.persistValuations([]);
 		this.render();
 	}
 
@@ -2065,6 +2205,7 @@ export class StockValuationsView extends ItemView {
 		// fit?" caveat); each grid's own caption below that only needs to say
 		// which two inputs it varies. ---
 		const sensitivitySection = root.createDiv({ cls: "sv-chart-section" });
+		this.sensitivitySectionEl = sensitivitySection;
 		sensitivitySection.createEl("h3", { text: "Sensitivity" });
 		sensitivitySection.createEl("p", {
 			cls: "sv-chart-caption",
@@ -2085,6 +2226,11 @@ export class StockValuationsView extends ItemView {
 			sensitivitySection,
 			"Ten Cap",
 			"Maintenance-capex split × how far reported capex might swing from what's on the filing, holding operating cash flow and shares steady."
+		);
+		this.ddmSensitivityWrapEl = this.renderSensitivityGridShell(
+			sensitivitySection,
+			"DDM",
+			"Cost of equity × dividend growth, holding dividends per share steady. \"—\" where growth is at or above cost of equity, where the model breaks down."
 		);
 
 		// --- Valuation history — last on the page, on purpose: it's a record
@@ -2180,6 +2326,11 @@ export class StockValuationsView extends ItemView {
 		this.field(tenCap, "Operating cash flow", "ocf", "number", "money");
 		this.field(tenCap, "Capital expenditures", "capex", "number", "money");
 		this.field(tenCap, "Maintenance capex", "mainPct", "number", "percent");
+
+		// --- DDM section ---
+		const ddm = this.section(formCol, "DDM (dividend payers only)");
+		this.field(ddm, "TTM dividends per share", "dps", "number", "perShare");
+		this.field(ddm, "Expected dividend growth", "ddmGrowth", "number", "percent");
 
 		// --- Results (sticky) ---
 		resultsCol.createEl("h3", { text: "Summary" });
@@ -2412,7 +2563,7 @@ export class StockValuationsView extends ItemView {
 
 		input.value = isFormattedNumber ? formatWithCommas(this.state[key]) : this.state[key];
 
-		// Shared facts (everything but the four growth assumptions) are only
+		// Shared facts (everything but the growth assumptions) are only
 		// editable from the Base tab — on Bull/Bear they're shown read-only,
 		// inherited live from whatever Base holds (kept in sync by
 		// setStateField, so the value here is already correct).
@@ -2624,6 +2775,7 @@ export class StockValuationsView extends ItemView {
 				apply("Total debt", "totDebt", result.totDebt, "money");
 				apply("Net debt", "netDebt", result.netDebt, "money");
 				apply("Tax rate", "taxRate", result.taxRate, "percent");
+				apply("TTM dividends per share", "dps", result.dps, "perShare");
 
 				// Total debt has no single canonical XBRL tag, so it's always
 				// worth a second look; a TTM-capable field that fell back to a
@@ -2637,6 +2789,7 @@ export class StockValuationsView extends ItemView {
 					["TTM operating cash flow", result.ocf],
 					["TTM capex", result.capex],
 					["TTM interest expense", result.intExp],
+					["TTM dividends per share", result.dps],
 				];
 				for (const [label, field] of ttmFields) {
 					if (filled.includes(label) && field.basis === "fiscal-year") {
@@ -2682,7 +2835,7 @@ export class StockValuationsView extends ItemView {
 		btn.disabled = true;
 		label.setText("Refreshing…");
 
-		let updated = 0;
+		const updated: string[] = [];
 		const failed: string[] = [];
 
 		// RFR isn't per-ticker — fetched (or forced-refreshed from Yahoo, bypassing
@@ -2716,7 +2869,7 @@ export class StockValuationsView extends ItemView {
 				const historyEntry = buildHistoryEntry(record.lastPriceRefreshAt, record.scenarios);
 				const history = appendHistoryEntry(record.history, historyEntry);
 				if (history.length > 0) record.history = history;
-				updated++;
+				updated.push(ticker);
 			}
 		} finally {
 			btn.disabled = false;
@@ -2724,12 +2877,14 @@ export class StockValuationsView extends ItemView {
 			this.priceRefreshInFlight = false;
 		}
 
-		if (updated > 0) {
-			void this.plugin.data.persistValuations();
+		// Only the tickers whose price (and so history) actually changed get
+		// their history note rewritten — a failed fetch leaves its note alone.
+		if (updated.length > 0) {
+			void this.plugin.data.persistValuations(updated);
 		}
 		this.render();
 
-		const parts = [`Updated ${updated} of ${tickers.length} price${tickers.length === 1 ? "" : "s"}.`];
+		const parts = [`Updated ${updated.length} of ${tickers.length} price${tickers.length === 1 ? "" : "s"}.`];
 		if (failed.length > 0) parts.push(`Couldn't fetch: ${failed.join(", ")}.`);
 		new Notice(parts.join(" "), 10000);
 	}
@@ -2741,17 +2896,29 @@ export class StockValuationsView extends ItemView {
 	// scenario's data, so it skips the chart/grids entirely (see
 	// renderFormBody/switchScenario).
 	private recalculate(): void {
-		// Mutates this.state.mktCap as a side effect — see computeResultsForState.
-		this.results = computeResultsForState(this.state, this.moneyScale, this.sharesScale, this.plugin.data.settings.taxRate);
-		// this.state is the same object as this.scenarios[activeScenario].state
-		// (mutated in place above), but results is a fresh object each call —
-		// write it back explicitly so the scenario map stays current.
-		this.scenarios[this.activeScenario].results = this.results;
+		// All three scenarios, not just the active one: an edit to a shared
+		// fact on Base (setStateField) also changes Bull/Bear's inputs, and the
+		// MoS chart and the grids' "does any case have a value" check read all
+		// three. Mutates each state's mktCap as a side effect — see
+		// computeResultsForState. this.state is the same object as
+		// this.scenarios[activeScenario].state, but results is a fresh object
+		// each call, so this.results is re-pointed afterwards.
+		for (const key of SCENARIO_KEYS) {
+			this.scenarios[key].results = computeResultsForState(
+				this.scenarios[key].state,
+				this.moneyScale,
+				this.sharesScale,
+				this.plugin.data.settings.taxRate
+			);
+		}
+		this.results = this.scenarios[this.activeScenario].results;
 		this.refreshResultsDisplay();
 		this.renderStockMosChart();
 		this.renderDcfSensitivityGrid();
 		this.renderGrahamSensitivityGrid();
 		this.renderTenCapSensitivityGrid();
+		this.renderDdmSensitivityGrid();
+		this.updateSensitivityVisibility();
 	}
 
 	// Refreshes just the Summary panel + validation state for whichever
@@ -2845,6 +3012,7 @@ export class StockValuationsView extends ItemView {
 		mosRow("DCF", formatCurrency(r.dcfIv), r.dcfMos);
 		mosRow("Graham", formatCurrency(r.grahamIv), r.grahamMos);
 		mosRow("Ten Cap", formatCurrency(r.tenCapIv), r.tenCapMos);
+		mosRow("DDM", formatCurrency(r.ddmIv), r.ddmMos);
 
 		// Everything else: real numbers worth showing, but not a fair value
 		// with a margin of safety attached — no MoS column to fake one for them.
@@ -2853,15 +3021,21 @@ export class StockValuationsView extends ItemView {
 		const metricsHead = metricsTable.createEl("tr");
 		["Metric", "Value"].forEach((h) => metricsHead.createEl("th", { text: h }));
 
-		const metricRow = (name: string, val: string, helpKey?: string) => {
+		// tone, when given, adds the same colored dot the MoS column uses —
+		// only Payback Time has bands worth coloring (see paybackTone).
+		const metricRow = (name: string, val: string, helpKey?: string, tone?: PaybackTone | null) => {
 			const tr = metricsTable.createEl("tr");
 			labelCell(tr, name, helpKey);
-			tr.createEl("td", { text: val, cls: "sv-num" });
+			const td = tr.createEl("td", { cls: tone ? "sv-num sv-mos" : "sv-num" });
+			if (tone) td.createSpan({ cls: `sv-dot sv-dot-${tone}` });
+			td.createSpan({ text: val });
 		};
 
 		metricRow("WACC", formatPercent(r.wacc * 100));
+		metricRow("Cost of equity (DDM discount rate)", formatPercent(r.costOfEquity * 100), "costOfEquity");
 		metricRow("Reverse DCF (implied growth)", formatPercent(r.impliedGrowth * 100), "impliedGrowth");
 		metricRow("Ten Cap owner-earnings yield", formatPercent(r.tenCapYield));
+		metricRow("Payback Time", formatYears(r.paybackYears), "paybackYears", paybackTone(r.paybackYears));
 	}
 
 	// DCF fair value across a fixed grid: WACC (columns) × growth yrs 1-5
@@ -2876,6 +3050,8 @@ export class StockValuationsView extends ItemView {
 	// table screen.
 	private renderDcfSensitivityGrid(): void {
 		this.dcfSensitivityTabulator?.destroy();
+		this.dcfSensitivityTabulator = null;
+		if (!this.showSensitivityGridIfValued(this.dcfSensitivityWrapEl, "dcfIv")) return;
 
 		const dcfInputs: DcfInputs = {
 			netDebt: this.numOf("base", "netDebt"),
@@ -2918,6 +3094,8 @@ export class StockValuationsView extends ItemView {
 	// grid above. Same rebuild-on-every-keystroke lifecycle as the DCF grid.
 	private renderGrahamSensitivityGrid(): void {
 		this.grahamSensitivityTabulator?.destroy();
+		this.grahamSensitivityTabulator = null;
+		if (!this.showSensitivityGridIfValued(this.grahamSensitivityWrapEl, "grahamIv")) return;
 
 		const grahamInputs: GrahamInputs = {
 			eps: this.numOf("base", "eps"),
@@ -2959,6 +3137,8 @@ export class StockValuationsView extends ItemView {
 	// the other two grids above.
 	private renderTenCapSensitivityGrid(): void {
 		this.tenCapSensitivityTabulator?.destroy();
+		this.tenCapSensitivityTabulator = null;
+		if (!this.showSensitivityGridIfValued(this.tenCapSensitivityWrapEl, "tenCapIv")) return;
 
 		const tenCapInputs: TenCapInputs = {
 			ocf: this.numOf("base", "ocf"),
@@ -2992,7 +3172,69 @@ export class StockValuationsView extends ItemView {
 		);
 	}
 
-	// Shared renderer for all three sensitivity grids: one row per rowValues
+	// DDM fair value across a fixed grid: cost of equity (columns) × dividend
+	// growth (rows) — the model's two judgment calls; dps is read from Base,
+	// same reasoning as the DCF grid. Cost of equity depends only on shared
+	// facts (CAPM inputs), so every case's column marker is the same; dividend
+	// growth is scenario-specific, so rows can differ. Same
+	// rebuild-on-every-keystroke lifecycle as the other grids.
+	private renderDdmSensitivityGrid(): void {
+		this.ddmSensitivityTabulator?.destroy();
+		this.ddmSensitivityTabulator = null;
+		if (!this.showSensitivityGridIfValued(this.ddmSensitivityWrapEl, "ddmIv")) return;
+
+		const ddmInputs: DdmInputs = {
+			dps: this.numOf("base", "dps"),
+			growth: this.numOf("base", "ddmGrowth"),
+			costOfEquity: this.scenarios.base.results.costOfEquity,
+		};
+		const { keValues, growthValues, grid } = calcDdmGrid(ddmInputs);
+
+		const currentByScenario: Record<ScenarioKey, GridMarker> = {} as Record<ScenarioKey, GridMarker>;
+		for (const key of SCENARIO_KEYS) {
+			currentByScenario[key] = {
+				row: nearestIndex(growthValues, this.numOf(key, "ddmGrowth")),
+				col: nearestIndex(keValues, this.scenarios[key].results.costOfEquity),
+			};
+		}
+
+		this.ddmSensitivityTabulator = this.buildSensitivityGrid(
+			this.ddmSensitivityWrapEl,
+			growthValues,
+			keValues,
+			grid,
+			currentByScenario,
+			this.num("price"),
+			"Dividend growth",
+			(v) => formatPercent(v * 100, 2),
+			(v) => `kₑ ${formatPercent(v * 100, 2)}`
+		);
+	}
+
+	// A method's sensitivity grid (its whole block — heading, caption, legend,
+	// grid) only shows when at least one of Bull/Base/Bear has an intrinsic
+	// value for it (see hasIntrinsicValue) — a grid of "—" or $0 for a method
+	// with nothing entered, or a non-payer's DDM, is just noise. Returns
+	// whether the caller should go on to build the grid.
+	private showSensitivityGridIfValued(wrapEl: HTMLElement, ivKey: "dcfIv" | "grahamIv" | "tenCapIv" | "ddmIv"): boolean {
+		const show = hasIntrinsicValue(SCENARIO_KEYS.map((key) => this.scenarios[key].results[ivKey]));
+		wrapEl.parentElement?.toggleClass("sv-hidden", !show);
+		return show;
+	}
+
+	// Hides the whole "Sensitivity" section (heading + shared intro) when
+	// every grid in it is hidden — e.g. a brand-new, still-blank valuation.
+	private updateSensitivityVisibility(): void {
+		const anyShown = [
+			this.dcfSensitivityTabulator,
+			this.grahamSensitivityTabulator,
+			this.tenCapSensitivityTabulator,
+			this.ddmSensitivityTabulator,
+		].some((t) => t !== null);
+		this.sensitivitySectionEl.toggleClass("sv-hidden", !anyShown);
+	}
+
+	// Shared renderer for every sensitivity grid: one row per rowValues
 	// entry, one column per colValues entry, cell = grid[ri][ci] (null ->
 	// "—"). Marks, in that case's own color, whichever cell is nearest each
 	// scenario's actual current inputs (currentByScenario — all three always

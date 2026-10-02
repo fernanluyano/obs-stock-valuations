@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calcDcf } from "../calculations";
+import { calcDcf, calcPaybackTime } from "../calculations";
 import { computeResultsForState, deriveMarketCap, numFromState } from "../valuationCalc";
 import type { FormState } from "../valuationStore";
 
@@ -33,6 +33,9 @@ function fixtureState(overrides: Partial<FormState> = {}): FormState {
 		ocf: "1000",
 		capex: "400",
 		mainPct: "50",
+
+		dps: "2",
+		ddmGrowth: "3",
 		...overrides,
 	};
 }
@@ -128,6 +131,63 @@ describe("computeResultsForState", () => {
 		const cheap = computeResultsForState(fixtureState({ price: "10", shares: "20000000" }), "millions", "ones", 21);
 		const expensive = computeResultsForState(fixtureState({ price: "80", shares: "20000000" }), "millions", "ones", 21);
 		expect(expensive.impliedGrowth).toBeGreaterThan(cheap.impliedGrowth);
+	});
+
+	it("computes paybackYears from the DCF's FCF/growth stages against EV (price × shares + net debt)", () => {
+		const state = fixtureState({ shares: "20000000" });
+		const r = computeResultsForState(state, "millions", "ones", 21);
+
+		const n = (key: keyof FormState) => numFromState(state, key, "millions", "ones", 21);
+		const expected = calcPaybackTime({
+			fcf: n("fcf"),
+			growth1to5: n("growth1to5"),
+			growth6to10: n("growth6to10"),
+			terminalGrowth: n("terminalGrowth"),
+			mktCap: n("price") * n("shares"),
+			netDebt: n("netDebt"),
+		});
+
+		expect(isFinite(r.paybackYears)).toBe(true);
+		expect(r.paybackYears).toBeCloseTo(expected, 10);
+	});
+
+	it("a higher price or a lower growth rate lengthens payback", () => {
+		const base = computeResultsForState(fixtureState({ price: "50", shares: "20000000" }), "millions", "ones", 21);
+		const pricier = computeResultsForState(fixtureState({ price: "80", shares: "20000000" }), "millions", "ones", 21);
+		const slower = computeResultsForState(fixtureState({ price: "50", shares: "20000000", growth1to5: "2" }), "millions", "ones", 21);
+		expect(pricier.paybackYears).toBeGreaterThan(base.paybackYears);
+		expect(slower.paybackYears).toBeGreaterThan(base.paybackYears);
+	});
+
+	it("computes DDM from dps/ddmGrowth, discounted at CAPM cost of equity (not WACC)", () => {
+		// ke = 4% + 1.2 × 5% = 10%; DDM = 2 × 1.03 / (0.10 − 0.03)
+		const r = computeResultsForState(fixtureState({ price: "20" }), "millions", "ones", 21);
+		expect(r.costOfEquity).toBeCloseTo(0.1, 10);
+		expect(r.ddmIv).toBeCloseTo(2.06 / 0.07, 10);
+		expect(r.ddmMos).toBeCloseTo(((2.06 / 0.07 - 20) / (2.06 / 0.07)) * 100, 10);
+		// The fixture carries debt, so WACC differs from ke — DDM must not use it.
+		expect(r.wacc).not.toBeCloseTo(r.costOfEquity, 5);
+	});
+
+	it("DDM doesn't move with price, but its margin of safety does", () => {
+		const cheap = computeResultsForState(fixtureState({ price: "20" }), "millions", "ones", 21);
+		const pricey = computeResultsForState(fixtureState({ price: "40" }), "millions", "ones", 21);
+		expect(pricey.ddmIv).toBeCloseTo(cheap.ddmIv, 10);
+		expect(pricey.ddmMos).toBeLessThan(cheap.ddmMos);
+	});
+
+	it("shows no DDM value for a non-payer (blank or 0 dividends per share)", () => {
+		for (const dps of ["", "0"]) {
+			const r = computeResultsForState(fixtureState({ dps }), "millions", "ones", 21);
+			expect(r.ddmIv).toBeNaN();
+			expect(r.ddmMos).toBeNaN();
+		}
+	});
+
+	it("never scales dividends per share by the money scale (it's $/share, like price and EPS)", () => {
+		const millions = computeResultsForState(fixtureState(), "millions", "ones", 21);
+		const billions = computeResultsForState(fixtureState(), "billions", "ones", 21);
+		expect(billions.ddmIv).toBeCloseTo(millions.ddmIv, 10);
 	});
 
 	it("falls back to the default tax rate when taxRate is blank, same as a fetched-but-empty field", () => {

@@ -1,15 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+	calcCostOfEquity,
 	calcDcf,
 	calcDcfGrid,
+	calcDdm,
+	calcDdmGrid,
+	DDM_GRID_GROWTH_VALUES,
+	DDM_GRID_KE_VALUES,
+	hasIntrinsicValue,
 	calcGraham,
 	calcGrahamGrid,
 	calcImpliedGrowth,
+	calcPaybackTime,
 	calcTenCap,
 	calcTenCapGrid,
 	calcWacc,
 	marginOfSafety,
 	ownerEarningsYield,
+	PAYBACK_MAX_YEARS,
+	paybackTone,
 } from "../calculations";
 
 describe("calcWacc", () => {
@@ -365,5 +374,183 @@ describe("ownerEarningsYield", () => {
 	it("returns NaN when shares or price is 0", () => {
 		expect(ownerEarningsYield(800, 0, 40)).toBeNaN();
 		expect(ownerEarningsYield(800, 100, 0)).toBeNaN();
+	});
+});
+
+describe("calcPaybackTime", () => {
+	const flat = { growth1to5: 0, growth6to10: 0, terminalGrowth: 0, netDebt: 0 };
+
+	it("at zero growth, is market cap / FCF (1 / FCF yield)", () => {
+		expect(calcPaybackTime({ ...flat, fcf: 100, mktCap: 1000 })).toBeCloseTo(10, 10);
+	});
+
+	it("interpolates the final, partial year", () => {
+		// 9 full years = 900, then 50 of year 10's 100 -> 9.5
+		expect(calcPaybackTime({ ...flat, fcf: 100, mktCap: 950 })).toBeCloseTo(9.5, 10);
+	});
+
+	it("measures against enterprise value — net debt lengthens it, net cash shortens it", () => {
+		expect(calcPaybackTime({ ...flat, fcf: 100, mktCap: 800, netDebt: 200 })).toBeCloseTo(10, 10);
+		expect(calcPaybackTime({ ...flat, fcf: 100, mktCap: 800, netDebt: -200 })).toBeCloseTo(6, 10);
+	});
+
+	it("returns 0 when net cash already covers the market cap", () => {
+		expect(calcPaybackTime({ ...flat, fcf: 100, mktCap: 500, netDebt: -600 })).toBe(0);
+	});
+
+	it("compounds growth1to5 for years 1-5, then growth6to10", () => {
+		// Years 1-5 at 10%: 110 + 121 + 133.1 + 146.41 + 161.051 = 671.561.
+		// Then flat at 161.051/yr: (1000 - 671.561) / 161.051 = 2.03934 more years.
+		const r = calcPaybackTime({ ...flat, fcf: 100, growth1to5: 0.1, mktCap: 1000 });
+		expect(r).toBeCloseTo(5 + 328.439 / 161.051, 4);
+	});
+
+	it("uses terminal growth past year 10", () => {
+		// 10 flat years = 1000; year 11 = 100 × 1.5 = 150 -> 10 + 100/150
+		const r = calcPaybackTime({ ...flat, fcf: 100, terminalGrowth: 0.5, mktCap: 1100 });
+		expect(r).toBeCloseTo(10 + 100 / 150, 10);
+	});
+
+	it("higher growth pays back sooner", () => {
+		const slow = calcPaybackTime({ ...flat, fcf: 100, growth1to5: 0.05, growth6to10: 0.03, mktCap: 1500 });
+		const fast = calcPaybackTime({ ...flat, fcf: 100, growth1to5: 0.2, growth6to10: 0.1, mktCap: 1500 });
+		expect(fast).toBeLessThan(slow);
+	});
+
+	it("returns Infinity when it never pays back within PAYBACK_MAX_YEARS", () => {
+		expect(calcPaybackTime({ ...flat, fcf: 1, mktCap: PAYBACK_MAX_YEARS + 1 })).toBe(Infinity);
+		// Exactly PAYBACK_MAX_YEARS still counts.
+		expect(calcPaybackTime({ ...flat, fcf: 1, mktCap: PAYBACK_MAX_YEARS })).toBeCloseTo(PAYBACK_MAX_YEARS, 10);
+	});
+
+	it("returns Infinity when shrinking FCF never catches up", () => {
+		expect(calcPaybackTime({ ...flat, fcf: 100, growth1to5: -0.5, growth6to10: -0.5, terminalGrowth: -0.5, mktCap: 1000 })).toBe(Infinity);
+	});
+
+	it("returns NaN when base FCF is zero or negative", () => {
+		expect(calcPaybackTime({ ...flat, fcf: 0, mktCap: 1000 })).toBeNaN();
+		expect(calcPaybackTime({ ...flat, fcf: -100, growth1to5: 0.5, mktCap: 1000 })).toBeNaN();
+	});
+});
+
+describe("paybackTone", () => {
+	it("is pos at or under 8 years (Town's buy rule)", () => {
+		expect(paybackTone(0)).toBe("pos");
+		expect(paybackTone(5.2)).toBe("pos");
+		expect(paybackTone(8)).toBe("pos");
+	});
+
+	it("is warn over 8 up to and including 10 years", () => {
+		expect(paybackTone(8.01)).toBe("warn");
+		expect(paybackTone(10)).toBe("warn");
+	});
+
+	it("is neg over 10 years, including never paying back (Infinity)", () => {
+		expect(paybackTone(10.01)).toBe("neg");
+		expect(paybackTone(Infinity)).toBe("neg");
+	});
+
+	it("is null when there's no payback to judge (NaN)", () => {
+		expect(paybackTone(NaN)).toBeNull();
+	});
+});
+
+describe("calcCostOfEquity", () => {
+	it("is CAPM: rfr + beta × mrp", () => {
+		expect(calcCostOfEquity(0.04, 1.2, 0.05)).toBeCloseTo(0.1, 10);
+	});
+
+	it("matches the cost of equity calcWacc blends in (all-equity company => WACC = ke)", () => {
+		const wacc = calcWacc({ rfr: 0.04, mrp: 0.05, beta: 1.2, intExp: 0, totDebt: 0, taxRate: 0.25, mktCap: 1000 });
+		expect(wacc).toBeCloseTo(calcCostOfEquity(0.04, 1.2, 0.05), 10);
+	});
+});
+
+describe("calcDdm", () => {
+	it("is D1 / (ke − g), with D1 = D0 × (1 + g)", () => {
+		// D1 = 2 × 1.03 = 2.06; 2.06 / (0.10 − 0.03) = 29.4286
+		expect(calcDdm({ dps: 2, growth: 0.03, costOfEquity: 0.1 })).toBeCloseTo(2.06 / 0.07, 10);
+	});
+
+	it("at zero growth, is a plain perpetuity D0 / ke", () => {
+		expect(calcDdm({ dps: 2, growth: 0, costOfEquity: 0.1 })).toBeCloseTo(20, 10);
+	});
+
+	it("rises sharply as growth approaches the cost of equity", () => {
+		const lower = calcDdm({ dps: 2, growth: 0.06, costOfEquity: 0.09 });
+		const higher = calcDdm({ dps: 2, growth: 0.07, costOfEquity: 0.09 });
+		// 2.14/0.02 vs 2.12/0.03 — about +51% for one point of growth.
+		expect(higher / lower).toBeCloseTo((2.14 / 0.02) / (2.12 / 0.03), 10);
+		expect(higher / lower).toBeGreaterThan(1.5);
+	});
+
+	it("handles negative growth (a shrinking dividend)", () => {
+		expect(calcDdm({ dps: 2, growth: -0.02, costOfEquity: 0.1 })).toBeCloseTo(1.96 / 0.12, 10);
+	});
+
+	it("returns NaN when growth is at or above the cost of equity", () => {
+		expect(calcDdm({ dps: 2, growth: 0.1, costOfEquity: 0.1 })).toBeNaN();
+		expect(calcDdm({ dps: 2, growth: 0.12, costOfEquity: 0.1 })).toBeNaN();
+	});
+
+	it("returns NaN for a non-payer (dividend zero or negative)", () => {
+		expect(calcDdm({ dps: 0, growth: 0.03, costOfEquity: 0.1 })).toBeNaN();
+		expect(calcDdm({ dps: -1, growth: 0.03, costOfEquity: 0.1 })).toBeNaN();
+	});
+});
+
+describe("calcDdmGrid", () => {
+	const baseInputs = { dps: 2, growth: 0.03, costOfEquity: 0.1 };
+
+	it("uses the default fixed axes", () => {
+		const result = calcDdmGrid(baseInputs);
+		expect(result.keValues).toBe(DDM_GRID_KE_VALUES);
+		expect(result.growthValues).toBe(DDM_GRID_GROWTH_VALUES);
+		expect(result.grid).toHaveLength(DDM_GRID_GROWTH_VALUES.length);
+		expect(result.grid[0]).toHaveLength(DDM_GRID_KE_VALUES.length);
+	});
+
+	it("computes one calcDdm value per (growth, ke) cell, matching calcDdm directly", () => {
+		const keValues = [0.08, 0.12];
+		const growthValues = [0, 0.04];
+		const result = calcDdmGrid(baseInputs, keValues, growthValues);
+		growthValues.forEach((g, ri) => {
+			keValues.forEach((ke, ci) => {
+				expect(result.grid[ri][ci]).toBeCloseTo(calcDdm({ dps: 2, growth: g, costOfEquity: ke }), 10);
+			});
+		});
+	});
+
+	it("returns null where growth is at or above cost of equity", () => {
+		const result = calcDdmGrid(baseInputs, [0.06, 0.08], [0.06, 0.07]);
+		expect(result.grid[0][0]).toBeNull(); // g = ke
+		expect(result.grid[1][0]).toBeNull(); // g > ke
+		expect(result.grid[0][1]).not.toBeNull();
+		expect(result.grid[1][1]).not.toBeNull();
+	});
+
+	it("is all null for a non-payer", () => {
+		const result = calcDdmGrid({ ...baseInputs, dps: 0 });
+		expect(result.grid.flat().every((v) => v === null)).toBe(true);
+	});
+
+	it("holds dps fixed — higher growth means higher value, higher ke means lower", () => {
+		const result = calcDdmGrid(baseInputs, [0.08, 0.12], [0.01, 0.04]);
+		expect(result.grid[1][0]!).toBeGreaterThan(result.grid[0][0]!);
+		expect(result.grid[0][1]!).toBeLessThan(result.grid[0][0]!);
+	});
+});
+
+describe("hasIntrinsicValue", () => {
+	it("is true when at least one case has a real, non-zero value", () => {
+		expect(hasIntrinsicValue([NaN, 42, NaN])).toBe(true);
+		expect(hasIntrinsicValue([-5, NaN, NaN])).toBe(true);
+	});
+
+	it("is false when every case is NaN, Infinity, or 0", () => {
+		expect(hasIntrinsicValue([NaN, NaN, NaN])).toBe(false);
+		expect(hasIntrinsicValue([0, 0, 0])).toBe(false);
+		expect(hasIntrinsicValue([0, NaN, Infinity])).toBe(false);
+		expect(hasIntrinsicValue([])).toBe(false);
 	});
 });

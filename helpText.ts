@@ -39,6 +39,15 @@ export const HELP_TEXT: Record<string, string> = {
 	ocf: "Operating cash flow over the trailing twelve months." + SEC_NOTE,
 	capex: "Total capital expenditures over the trailing twelve months." + SEC_NOTE,
 	mainPct: "Maintenance capex %: the share of total capex that merely sustains the existing business (vs. funding growth). Used to isolate owner earnings.",
+	dps:
+		"Dividends per share paid over the trailing twelve months, in actual dollars — never scaled. The DDM only applies to dividend payers: leave this blank or 0 for a company that doesn't pay one, and DDM shows \"—\"." +
+		SEC_NOTE,
+	ddmGrowth:
+		"Expected dividend growth rate, held constant forever (Gordon Growth). Must be below the cost of equity — at or above it the model breaks down and DDM shows \"—\". Keep it near long-run GDP/inflation for a mature payer; the closer it gets to cost of equity, the more the value balloons.",
+	costOfEquity:
+		"Cost of equity (ke): CAPM, risk-free rate + beta × market risk premium — the same figure WACC blends in. The DDM discounts at this rather than WACC, since dividends go to shareholders only, not lenders.",
+	paybackYears:
+		"Payback Time (Phil Town): how many years of growing free cash flow it takes to add up to what buying the whole business costs today — enterprise value, i.e. market cap plus net debt. FCF compounds at this scenario's DCF growth rates year by year (years 1-5, then 6-10, then terminal growth), undiscounted. Colored green at 8 years or less (Town's buy rule), yellow over 8 up to 10 (10 is Ten Cap's zero-growth payback, and the end of the DCF's explicit forecast), red beyond that. Mostly FCF yield plus your growth assumption restated in years, so it's no independent check on the DCF. Shows \"—\" when FCF isn't positive, and \"> 30 yrs\" when it never pays back within 30 years.",
 
 	cape: "Shiller CAPE (cyclically-adjusted P/E, aka P/E10): the S&P 500's price divided by its average inflation-adjusted earnings over the trailing 10 years, smoothing out the single-year earnings swings (recessions, write-offs) that make an ordinary trailing P/E noisy. A high reading means the market is pricey relative to a decade of normalized earnings — not necessarily overvalued outright.",
 	trCape: "Total-return CAPE: the same calculation as CAPE, but with both the price and the trailing-earnings series adjusted as if dividends were reinvested. Plain CAPE is skewed by falling payout ratios over time (companies retaining more earnings instead of paying them out mechanically inflates recent earnings relative to decades ago) — TR-CAPE corrects for that, making it a fairer comparison across eras.",

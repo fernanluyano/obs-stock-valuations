@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCurrency, formatPercent, formatWithCommas, sanitizeNumericInput } from "../format";
+import { formatCurrency, formatPercent, formatWithCommas, formatYears, sanitizeNumericInput } from "../format";
 
 describe("sanitizeNumericInput", () => {
 	it("strips non-numeric characters", () => {
@@ -61,6 +61,14 @@ describe("formatCurrency", () => {
 		expect(formatCurrency(NaN)).toBe("—");
 		expect(formatCurrency(Infinity)).toBe("—");
 	});
+
+	// JSON stores NaN as null; the global isFinite(null) is true (null -> 0),
+	// which used to let null through to null.toLocaleString() and crash the
+	// vault note write.
+	it("renders an em dash for null/undefined instead of throwing", () => {
+		expect(formatCurrency(null as unknown as number)).toBe("—");
+		expect(formatCurrency(undefined as unknown as number)).toBe("—");
+	});
 });
 
 describe("formatPercent", () => {
@@ -73,5 +81,31 @@ describe("formatPercent", () => {
 	it("renders an em dash for non-finite values", () => {
 		expect(formatPercent(NaN)).toBe("—");
 		expect(formatPercent(-Infinity)).toBe("—");
+	});
+
+	it("renders an em dash for null/undefined instead of throwing", () => {
+		expect(formatPercent(null as unknown as number)).toBe("—");
+		expect(formatPercent(undefined as unknown as number)).toBe("—");
+	});
+});
+
+describe("formatYears", () => {
+	it("formats to one decimal with a yrs suffix", () => {
+		expect(formatYears(7.444)).toBe("7.4 yrs");
+		expect(formatYears(0)).toBe("0.0 yrs");
+	});
+
+	it("shows a floor for Infinity (never paid back within the cap)", () => {
+		expect(formatYears(Infinity)).toBe("> 30 yrs");
+	});
+
+	it("shows an em dash for NaN (no positive FCF)", () => {
+		expect(formatYears(NaN)).toBe("—");
+	});
+
+	it("shows an em dash for null/undefined and -Infinity, never the > 30 yrs floor", () => {
+		expect(formatYears(null as unknown as number)).toBe("—");
+		expect(formatYears(undefined as unknown as number)).toBe("—");
+		expect(formatYears(-Infinity)).toBe("—");
 	});
 });

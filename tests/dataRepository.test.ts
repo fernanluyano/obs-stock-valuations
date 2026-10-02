@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DataRepository, PluginDataAdapter } from "../dataRepository";
 import type { FormState, Results, SavedValuation, ValuationTable } from "../valuationStore";
 import type { LegacySavedValuation } from "../migrations";
+import { computeResultsForState } from "../valuationCalc";
 
 // A minimal stand-in for settings.ts's StockValuationsSettings/DEFAULT_SETTINGS
 // — settings.ts itself imports real Obsidian classes (Notice,
@@ -15,7 +16,7 @@ interface FixtureSettings {
 	aaaBondYield: number;
 	defaultMoneyScale: "millions";
 	defaultSharesScale: "millions";
-	valuationsNotePath: string;
+	historyNotesFolder: string;
 	enableResearchLinks: boolean;
 	researchNotesFolder: string;
 }
@@ -27,7 +28,7 @@ const DEFAULT_SETTINGS: FixtureSettings = {
 	aaaBondYield: 5,
 	defaultMoneyScale: "millions",
 	defaultSharesScale: "millions",
-	valuationsNotePath: "Stock Valuations/Stock Valuations.md",
+	historyNotesFolder: "Stock Valuations",
 	enableResearchLinks: false,
 	researchNotesFolder: "",
 };
@@ -59,6 +60,9 @@ function fixtureState(overrides: Partial<FormState> = {}): FormState {
 		ocf: "1000",
 		capex: "400",
 		mainPct: "50",
+
+		dps: "",
+		ddmGrowth: "",
 		...overrides,
 	};
 }
@@ -74,6 +78,10 @@ function fixtureResults(overrides: Partial<Results> = {}): Results {
 		tenCapIv: 45,
 		tenCapYield: 0.08,
 		tenCapMos: -0.1,
+		ddmIv: NaN,
+		ddmMos: NaN,
+		costOfEquity: 0.1,
+		paybackYears: 7,
 		...overrides,
 	};
 }
@@ -115,6 +123,22 @@ function fakeAdapter(initial: unknown = null): PluginDataAdapter & { current: un
 	};
 }
 
+// Like fakeAdapter, but "disk" is real JSON text, the way Obsidian's own
+// loadData/saveData persist data.json — so NaN really becomes null on save,
+// every load parses a fresh copy, and a test can compare the exact bytes on
+// disk before and after to prove nothing was written.
+function jsonAdapter(initial: unknown): PluginDataAdapter & { disk: string } {
+	return {
+		disk: JSON.stringify(initial),
+		async loadData() {
+			return JSON.parse(this.disk);
+		},
+		async saveData(data: unknown) {
+			this.disk = JSON.stringify(data);
+		},
+	};
+}
+
 function fixtureSettings(overrides: Partial<FixtureSettings> = {}): FixtureSettings {
 	return { ...DEFAULT_SETTINGS, ...overrides };
 }
@@ -151,18 +175,84 @@ describe("DataRepository.load", () => {
 		expect(repo.lastSeenVersion).toBe("1.2.3");
 	});
 
-	it("loads an already-migrated table as-is, without writing back to disk", async () => {
+	it("loads an already-migrated table's inputs as-is, without writing back to disk", async () => {
 		const table: ValuationTable = { ACME: fixtureValuation() };
-		const adapter = fakeAdapter({ settings: {}, valuations: table, schemaVersion: 2 });
+		const adapter = jsonAdapter({ settings: {}, valuations: table, schemaVersion: 2 });
 		const syncNote = vi.fn().mockResolvedValue(undefined);
 		const repo = new DataRepository(adapter, fixtureSettings(), syncNote);
 
-		const before = adapter.current;
+		const diskBefore = adapter.disk;
 		await repo.load();
 
-		expect(repo.getValuation("ACME")).toEqual(table.ACME);
-		expect(adapter.current).toBe(before); // no re-save of an already-current table
+		expect(repo.getValuation("ACME")!.scenarios.base.state).toEqual(table.ACME.scenarios.base.state);
+		expect(adapter.disk).toBe(diskBefore); // no re-save of an already-current table
 		expect(syncNote).not.toHaveBeenCalled();
+	});
+
+	it("rebuilds every scenario's results from its saved inputs, ignoring the results that were saved", async () => {
+		// Deliberately wrong/stale saved results — including the nulls JSON
+		// turns NaN into — must not survive the load.
+		const stale = fixtureResults({ dcfIv: 12345, ddmIv: null as unknown as number, ddmMos: null as unknown as number });
+		const record = fixtureValuation({
+			scenarios: {
+				bull: { state: fixtureState({ dps: "2", ddmGrowth: "4" }), results: stale },
+				base: { state: fixtureState({ dps: "2", ddmGrowth: "3" }), results: stale },
+				bear: { state: fixtureState(), results: stale }, // non-payer
+			},
+		});
+		const adapter = jsonAdapter({ settings: { taxRate: 21 }, valuations: { ACME: record }, schemaVersion: 2 });
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await repo.load();
+
+		const loaded = repo.getValuation("ACME")!;
+		for (const key of ["bull", "base", "bear"] as const) {
+			const expected = computeResultsForState({ ...record.scenarios[key].state }, "millions", "millions", 21);
+			expect(loaded.scenarios[key].results).toEqual(expected);
+		}
+		expect(loaded.scenarios.base.results.dcfIv).not.toBe(12345);
+		// A non-payer's DDM comes back as NaN (no value), never null.
+		expect(loaded.scenarios.bear.results.ddmIv).toBeNaN();
+		expect(loaded.scenarios.bear.results.ddmIv).not.toBeNull();
+	});
+
+	it("never changes the saved inputs while recomputing — not even the derived mktCap", async () => {
+		const state = fixtureState({ mktCap: "999" }); // stale vs. price × shares
+		const record = fixtureValuation({ scenarios: { bull: { state, results: fixtureResults() }, base: { state, results: fixtureResults() }, bear: { state, results: fixtureResults() } } });
+		const adapter = jsonAdapter({ settings: {}, valuations: { ACME: record }, schemaVersion: 2 });
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await repo.load();
+
+		const loaded = repo.getValuation("ACME")!;
+		for (const key of ["bull", "base", "bear"] as const) {
+			expect(loaded.scenarios[key].state).toEqual(state);
+		}
+	});
+
+	it("leaves history entries exactly as saved, nulls included", async () => {
+		const history = [
+			{ at: 1, price: 50, dcfBearIv: 40, dcfBaseIv: 60, dcfBullIv: 80, grahamBearIv: 45, grahamBaseIv: 55, grahamBullIv: 65, tenCapIv: 45, impliedGrowth: null, ddmBearIv: null, ddmBaseIv: null, ddmBullIv: null },
+		];
+		const adapter = jsonAdapter({ settings: {}, valuations: { ACME: fixtureValuation({ history }) }, schemaVersion: 2 });
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await repo.load();
+
+		expect(repo.getValuation("ACME")!.history).toEqual(history);
+	});
+
+	it("round-trips a NaN result through save and reload as NaN (JSON stores it as null)", async () => {
+		const adapter = jsonAdapter({ settings: {}, valuations: {}, schemaVersion: 2 });
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn().mockResolvedValue(undefined));
+		await repo.load();
+
+		const state = fixtureState(); // no dividend -> DDM is NaN
+		const results = computeResultsForState({ ...state }, "millions", "millions", 21);
+		expect(results.ddmIv).toBeNaN();
+		await repo.saveValuation("ACME", fixtureValuation({ scenarios: { bull: { state, results }, base: { state, results }, bear: { state, results } } }));
+		expect(adapter.disk).toContain('"ddmIv":null'); // what JSON actually wrote
+
+		const reloaded = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await reloaded.load();
+		expect(reloaded.getValuation("ACME")!.scenarios.base.results.ddmIv).toBeNaN();
 	});
 
 	it("migrates a legacy (pre-scenario) table and persists the result immediately", async () => {
@@ -177,7 +267,41 @@ describe("DataRepository.load", () => {
 		expect(migrated?.scenarios.base.state).toEqual(legacy.ACME.state);
 		expect(migrated?.scenarios.bull.state).toEqual(legacy.ACME.state);
 		expect(adapter.current).toMatchObject({ schemaVersion: 2 });
-		expect(syncNote).toHaveBeenCalledTimes(1);
+		// Loading never writes notes — only a ticker's own save/refresh/edit does.
+		expect(syncNote).not.toHaveBeenCalled();
+	});
+
+	it("seeds historyNotesFolder from the retired valuationsNotePath setting's folder, and drops the old key", async () => {
+		const adapter = fakeAdapter({
+			settings: { valuationsNotePath: "Investing/Valuations/Summary.md" },
+			valuations: {},
+			schemaVersion: 2,
+		});
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await repo.load();
+
+		expect(repo.settings.historyNotesFolder).toBe("Investing/Valuations");
+		expect("valuationsNotePath" in repo.settings).toBe(false);
+	});
+
+	it("keeps an explicitly-set historyNotesFolder over the retired valuationsNotePath", async () => {
+		const adapter = fakeAdapter({
+			settings: { valuationsNotePath: "Old/Summary.md", historyNotesFolder: "New" },
+			valuations: {},
+			schemaVersion: 2,
+		});
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await repo.load();
+
+		expect(repo.settings.historyNotesFolder).toBe("New");
+	});
+
+	it("uses the vault root when the retired summary note sat at the root", async () => {
+		const adapter = fakeAdapter({ settings: { valuationsNotePath: "Summary.md" }, valuations: {}, schemaVersion: 2 });
+		const repo = new DataRepository(adapter, fixtureSettings(), vi.fn());
+		await repo.load();
+
+		expect(repo.settings.historyNotesFolder).toBe("");
 	});
 
 	it("treats a missing table as legacy-empty rather than throwing", async () => {
@@ -205,7 +329,59 @@ describe("DataRepository valuation CRUD", () => {
 
 		expect(repo.getValuation("ACME")).toBe(record);
 		expect(adapter.current).toMatchObject({ valuations: { ACME: record } });
-		expect(syncNote).toHaveBeenCalledWith({ ACME: record });
+		expect(syncNote).toHaveBeenCalledWith("ACME", record);
+	});
+
+	it("saveValuation rewrites only the saved ticker's history note, never the others'", async () => {
+		const { repo, syncNote } = await loadedRepo();
+		await repo.saveValuation("ACME", fixtureValuation());
+		await repo.saveValuation("GLOB", fixtureValuation());
+		syncNote.mockClear();
+
+		await repo.saveValuation("ACME", fixtureValuation({ updatedAt: 2 }));
+
+		expect(syncNote).toHaveBeenCalledTimes(1);
+		expect(syncNote).toHaveBeenCalledWith("ACME", expect.anything());
+	});
+
+	it("deleteValuation writes no note — the deleted ticker's history note is left in the vault", async () => {
+		const { repo, syncNote } = await loadedRepo();
+		await repo.saveValuation("ACME", fixtureValuation());
+		syncNote.mockClear();
+
+		await repo.deleteValuation("ACME");
+
+		expect(syncNote).not.toHaveBeenCalled();
+	});
+
+	it("keeps going when one ticker's note fails, reporting that ticker", async () => {
+		const syncNote = vi.fn().mockImplementation((ticker: string) =>
+			ticker === "GLOB" ? Promise.reject(new Error("nope")) : Promise.resolve()
+		);
+		const onNoteSyncError = vi.fn();
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const adapter = fakeAdapter({ settings: {}, valuations: { ACME: fixtureValuation(), GLOB: fixtureValuation(), ZETA: fixtureValuation() }, schemaVersion: 2 });
+		const repo = new DataRepository(adapter, fixtureSettings(), syncNote, onNoteSyncError);
+		await repo.load();
+
+		await repo.persistValuations(["GLOB", "ZETA"]);
+
+		expect(syncNote.mock.calls.map((c) => c[0])).toEqual(["GLOB", "ZETA"]);
+		expect(onNoteSyncError).toHaveBeenCalledTimes(1);
+		expect(onNoteSyncError).toHaveBeenCalledWith(expect.any(Error), "GLOB");
+		consoleError.mockRestore();
+	});
+
+	it("persistValuations rewrites exactly the named tickers' notes, skipping any that no longer exist", async () => {
+		const { repo, syncNote } = await loadedRepo();
+		await repo.saveValuation("ACME", fixtureValuation());
+		await repo.saveValuation("GLOB", fixtureValuation());
+		await repo.saveValuation("ZETA", fixtureValuation());
+		syncNote.mockClear();
+
+		await repo.persistValuations(["ACME", "ZETA", "GONE"]);
+
+		expect(syncNote.mock.calls.map((c) => c[0])).toEqual(["ACME", "ZETA"]);
 	});
 
 	it("saveValuation overwrites an existing record for the same ticker", async () => {
@@ -241,16 +417,18 @@ describe("DataRepository valuation CRUD", () => {
 	});
 
 	it("persistValuations flushes an in-place mutation to a record obtained from getValuation", async () => {
-		const { adapter, repo } = await loadedRepo();
+		const { adapter, repo, syncNote } = await loadedRepo();
 		await repo.saveValuation("ACME", fixtureValuation());
+		syncNote.mockClear();
 
 		const live = repo.getValuation("ACME")!;
 		live.researchNotePath = "Research/ACME.md";
-		await repo.persistValuations();
+		await repo.persistValuations([]);
 
 		expect((adapter.current as { valuations: ValuationTable }).valuations.ACME.researchNotePath).toBe(
 			"Research/ACME.md"
 		);
+		expect(syncNote).not.toHaveBeenCalled(); // research links aren't in the history note
 	});
 });
 
@@ -366,7 +544,7 @@ describe("DataRepository note-sync failure handling", () => {
 
 		expect(repo.getValuation("ACME")).toBeDefined();
 		expect((adapter.current as { valuations: ValuationTable }).valuations.ACME).toBeDefined();
-		expect(onNoteSyncError).toHaveBeenCalledWith(error);
+		expect(onNoteSyncError).toHaveBeenCalledWith(error, "ACME");
 		expect(consoleError).toHaveBeenCalled();
 
 		consoleError.mockRestore();

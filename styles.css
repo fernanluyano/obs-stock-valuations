@@ -3,6 +3,7 @@
 	--sv-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
 	--sv-pos: #3aa55c;
 	--sv-neg: #c2564f;
+	--sv-warn: #d4a72c;
 
 	padding: var(--size-4-6) var(--size-4-8) var(--size-4-8);
 }
@@ -1702,6 +1703,10 @@ td.sv-num {
 
 .sv-dot-neg {
 	background-color: var(--sv-neg);
+}
+
+.sv-dot-warn {
+	background-color: var(--sv-warn);
 }
 
 .sv-note {

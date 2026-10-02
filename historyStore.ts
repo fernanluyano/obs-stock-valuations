@@ -25,7 +25,7 @@ function monthKey(at: number): string {
 
 // Builds the point-in-time snapshot appended to a ticker's history — the
 // numbers that matter for "fair value vs. price over time", Bear/Base/Bull
-// for DCF and Graham like everywhere else in the plugin. Shared by an
+// for DCF, Graham, and DDM like everywhere else in the plugin. Shared by an
 // explicit form Save and a price refresh: a refresh only ever changes price
 // and everything derived from it (MoS, IV), never fundamentals, but that's
 // exactly what this timeline is tracking, so it earns a history point same as
@@ -44,6 +44,9 @@ export function buildHistoryEntry(at: number, scenarios: Record<ScenarioKey, Sce
 		grahamBullIv: bull.results.grahamIv,
 		tenCapIv: base.results.tenCapIv,
 		impliedGrowth: base.results.impliedGrowth,
+		ddmBearIv: bear.results.ddmIv,
+		ddmBaseIv: base.results.ddmIv,
+		ddmBullIv: bull.results.ddmIv,
 	};
 }
 

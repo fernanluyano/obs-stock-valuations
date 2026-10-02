@@ -15,6 +15,7 @@ export const SCENARIO_SPECIFIC_FIELDS: ReadonlySet<keyof FormState> = new Set([
 	"growth6to10",
 	"terminalGrowth",
 	"grahamGrowth",
+	"ddmGrowth",
 ]);
 
 // Display labels for SCENARIO_SPECIFIC_FIELDS, reused in violation messages
@@ -24,6 +25,7 @@ export const SCENARIO_FIELD_LABELS: Partial<Record<keyof FormState, string>> = {
 	growth6to10: "FCF growth, yrs 6-10",
 	terminalGrowth: "Terminal growth rate",
 	grahamGrowth: "Expected EPS growth, 7-10yr",
+	ddmGrowth: "Expected dividend growth",
 };
 
 // One cross-scenario check. Returns every violation message it finds (empty

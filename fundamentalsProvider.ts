@@ -83,6 +83,7 @@ export interface FundamentalsResult {
 	totDebt: FieldResult; // most recent long-term debt (noncurrent + current), $
 	netDebt: FieldResult; // totDebt - cash, $
 	taxRate: FieldResult; // TTM effective tax rate, as a decimal fraction (0.21 = 21%)
+	dps: FieldResult; // TTM dividends per share, $/share — missing for non-payers
 }
 
 export interface FundamentalsError {
@@ -162,6 +163,10 @@ const TAGS = {
 		"IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
 	],
 	taxExpense: ["IncomeTaxExpenseBenefit"],
+	// Declared and cash-paid per-share dividends are the same figure for
+	// almost every regular payer (they only differ by timing around a period
+	// end), so the second is a genuine synonym for filers who only tag that one.
+	dividendsPerShare: ["CommonStockDividendsPerShareDeclared", "CommonStockDividendsPerShareCashPaid"],
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -494,6 +499,11 @@ export function deriveFundamentals(companyFacts: SecCompanyFacts, ticker: string
 	const taxExpense = latestFiscalYear(pickConceptFacts(gaap, TAGS.taxExpense, "USD"));
 	const taxRate = deriveTaxRate(taxExpense, pretaxIncome);
 
+	const dps = computeTtm(pickConceptFacts(gaap, TAGS.dividendsPerShare, "USD/shares"));
+	if (dps.value === null) {
+		dps.note = `${dps.note} Likely a non-payer — the DDM only applies to companies that pay a dividend.`;
+	}
+
 	return {
 		ticker: ticker.toUpperCase(),
 		cik: padCik(companyFacts.cik),
@@ -507,6 +517,7 @@ export function deriveFundamentals(companyFacts: SecCompanyFacts, ticker: string
 		totDebt: withStaleWarning(totDebt, now),
 		netDebt: withStaleWarning(netDebt, now),
 		taxRate: withStaleWarning(taxRate, now),
+		dps: withStaleWarning(dps, now),
 	};
 }
 

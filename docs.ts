@@ -36,9 +36,10 @@ export interface DataSourceDoc {
 export const VALUATION_HISTORY_DOC: DataSourceDoc = {
 	title: "Valuation history",
 	body: [
-		"Every explicit Save on the calculator form, and every price refresh from the table's \"Refresh prices\" button, appends a snapshot (price, DCF/Graham Bear/Base/Bull fair values, Ten Cap, and Reverse DCF) to that ticker's own history table, shown at the bottom of the form. A refresh only ever moves price and what's derived from it (MoS, IV) — never fundamentals — but that's exactly what this timeline tracks. More than one Save or refresh on the same calendar day replaces that day's entry instead of adding another, so re-saving or refreshing a few times in one sitting doesn't spam the timeline.",
+		"Every explicit Save on the calculator form, and every price refresh from the table's \"Refresh prices\" button, appends a snapshot (price, DCF/Graham/DDM Bear/Base/Bull fair values, Ten Cap, and Reverse DCF) to that ticker's own history table, shown at the bottom of the form. A refresh only ever moves price and what's derived from it (MoS, IV) — never fundamentals — but that's exactly what this timeline tracks. More than one Save or refresh on the same calendar day replaces that day's entry instead of adding another, so re-saving or refreshing a few times in one sitting doesn't spam the timeline.",
 		"History only accrues forward from here — there's no way to build it backwards. A ticker saved before this feature existed (or one you haven't re-saved since) starts with an empty history table; it fills in one entry at a time from your next Save onward, not retroactively.",
-		"The point is a specific question: has this ticker actually looked cheap for a long stretch and never re-rated (a value trap), or is a big margin of safety brand new? History is supplementary — the saved-valuations table and the vault summary note always reflect the latest save only, never the history behind it.",
+		"The point is a specific question: has this ticker actually looked cheap for a long stretch and never re-rated (a value trap), or is a big margin of safety brand new? The saved-valuations table always reflects the latest save only.",
+		"Each ticker's full history is also mirrored to its own vault note, TICKER-history.md (e.g. ADBE-history.md), in the folder set under Settings → History notes folder — one row per entry, newest first. Only the ticker that changed is rewritten (a Save, a price refresh, or a history delete/compact), and a note first appears the next time its ticker is saved or refreshed. Deleting a ticker leaves its note in the vault. Don't hand-edit these notes — they're rewritten whenever their ticker changes.",
 		"Delete any single entry (with confirmation) if it was a mistake. \"Compact history\" (also confirmed) collapses everything older than about 6 months down to one entry per calendar month, so the file doesn't grow without bound over years of regular saves — the most recent 6 months are always left at full detail.",
 	],
 };
@@ -56,7 +57,7 @@ export const DATA_SOURCES_DOC: DataSourceDoc = {
 };
 
 export const DOCS_INTRO: string[] = [
-	"This plugin runs four independent valuation methods off the same inputs. Each one encodes a different set of assumptions about how a business creates value — none of them is \"the\" right answer, and they will often disagree with each other.",
+	"This plugin runs five independent valuation methods off the same inputs (one of them, the DDM, only for dividend payers), plus Payback Time — a years-to-recoup metric rather than a fair value. Each one encodes a different set of assumptions about how a business creates value — none of them is \"the\" right answer, and they will often disagree with each other.",
 	"No method here is suitable for every company. It's on you, the user, to judge whether a given method's assumptions actually hold for the business you're valuing before you trust its output — see \"Does this method fit?\" on each one below for pointers, but the judgment call is yours to make. The most useful signal is often agreement (or disagreement) between two or three methods on a company they're each suited to, not any single number in isolation.",
 ];
 
@@ -81,7 +82,7 @@ export const METHOD_DOCS: MethodDoc[] = [
 			"A two-stage, 10-year free cash flow projection discounted at WACC, with a Gordon Growth terminal value covering everything past year 10.",
 		],
 		goodFor: "High-margin, recurring-revenue businesses with a multi-year track record of positive, converting free cash flow.",
-		useCaution: "Weak for companies with no single meaningful FCF figure (large financials, insurers, or diversified holding companies where cash flow is swamped by portfolio/segment movements), and for anything where growth or discount-rate assumptions do more work than the underlying cash flow — terminal value alone is typically 60–75% of the result, so a small change to either input swings the output 30–50%+. Use \"Reverse DCF (implied growth)\" as a gut check on this, especially on higher-multiple names — shown in the results panel's Other metrics table, and as its own column in the saved-valuations table and vault summary note: it solves backward from today's price for the single flat years 1–10 growth rate the market is already assuming (holding every other DCF input fixed), so you can judge that one number against the company's own history and guidance instead of debating growth/WACC assumptions in the abstract.",
+		useCaution: "Weak for companies with no single meaningful FCF figure (large financials, insurers, or diversified holding companies where cash flow is swamped by portfolio/segment movements), and for anything where growth or discount-rate assumptions do more work than the underlying cash flow — terminal value alone is typically 60–75% of the result, so a small change to either input swings the output 30–50%+. Use \"Reverse DCF (implied growth)\" as a gut check on this, especially on higher-multiple names — shown in the results panel's Other metrics table, and as its own column in the saved-valuations table and each ticker's history note: it solves backward from today's price for the single flat years 1–10 growth rate the market is already assuming (holding every other DCF input fixed), so you can judge that one number against the company's own history and guidance instead of debating growth/WACC assumptions in the abstract.",
 		sources: [
 			{ label: "Discounted cash flow — Wikipedia", url: "https://en.wikipedia.org/wiki/Discounted_cash_flow" },
 			{ label: "Terminal Value (DCF) — Wall Street Prep", url: "https://www.wallstreetprep.com/knowledge/terminal-value/" },
@@ -116,17 +117,41 @@ export const METHOD_DOCS: MethodDoc[] = [
 			{ label: "Owner earnings — Wikipedia", url: "https://en.wikipedia.org/wiki/Owner_earnings" },
 		],
 	},
+	{
+		title: "DDM — Dividend Discount Model",
+		formula: "Intrinsic value per share = D₁ / (kₑ − g)\nD₁ = D₀ × (1 + g)\nkₑ = Rfr + β×MRP   (CAPM — cost of equity, not WACC)",
+		body: [
+			"The Gordon Growth form of the dividend discount model: a share is worth the present value of every future dividend, assuming the dividend grows at a constant rate g forever. D₀ is the trailing twelve months' dividends per share, and g is a scenario-specific input, so Bull/Base/Bear each get their own value.",
+			"It discounts at cost of equity (kₑ), not WACC — dividends are paid only to shareholders, not lenders. kₑ comes from the same CAPM inputs (risk-free rate, beta, market risk premium) WACC already uses, and is shown on its own in the results panel's Other metrics table.",
+			"This method only applies to dividend payers. For a company that doesn't pay a dividend (dividends per share blank or 0), DDM shows \"—\" rather than a value of zero.",
+		],
+		goodFor: "Mature, steady dividend payers whose dividend genuinely tracks distributable earnings and has a long, stable growth history — utilities, consumer staples, mature banks and insurers, REITs.",
+		useCaution: "Only applies to dividend payers. Undervalues companies that return cash mostly through buybacks (their dividend understates what shareholders actually receive), and is meaningless for growth companies that pay little or nothing. Extremely sensitive to g as it approaches kₑ — at kₑ = 9%, moving g from 6% to 7% raises the value by about half — and undefined once g ≥ kₑ (shows \"—\"). A single constant growth rate also can't capture a dividend that's about to accelerate, be cut, or flatten out.",
+		sources: [
+			{ label: "Dividend Discount Model (DDM) — Wall Street Prep", url: "https://www.wallstreetprep.com/knowledge/dividend-discount-model/" },
+		],
+	},
+	{
+		title: "Payback Time",
+		formula: "FCFₙ = FCFₙ₋₁×(1+g)      [g1–5 for years 1–5, g6–10 for years 6–10, terminal growth after]\nEV = market cap + net debt\nPayback = years until Σ FCFₙ ≥ EV   (final year interpolated)",
+		body: [
+			"Phil Town's Payback Time, from the same Rule #1 framework as Ten Cap: if you bought the whole business at today's price, how many years would its free cash flow take to pay you back? Town's rule of thumb is 8 years or less, so the value is colored green at ≤ 8 years, yellow over 8 up to 10, and red beyond 10. The yellow cutoff is this plugin's, not Town's payback rule, but it's still his number: Ten Cap's 10× owner earnings is exactly a 10-year payback at zero growth, and 10 years is also where the DCF's explicit forecast ends — a payback past it depends on cash the growth inputs never actually forecast. It isn't a fair value, so it has no margin of safety — it's shown in the results panel's Other metrics table, right below Ten Cap's owner-earnings yield.",
+			"Growth isn't a separate input: FCF compounds at each scenario's own DCF growth rates, year by year — years 1–5 at g1–5, years 6–10 at g6–10, and terminal growth past year 10 — so Bull/Base/Bear each get their own payback, consistent with that scenario's DCF. Two deliberate departures from a naive version: it's measured against enterprise value (market cap + net debt) rather than Town's market cap alone, so debt you'd effectively be taking on isn't ignored; and the final year is interpolated (cash assumed to arrive evenly through the year), so you get e.g. 7.4 years rather than a whole number. Capped at 30 years.",
+			"At zero growth, payback is exactly 1 ÷ FCF yield — so this is mostly FCF yield plus your growth assumption, restated in years. It's easier to gut-check than a fair value, and the fixed horizon stops far-out growth from rescuing an expensive stock the way a DCF's terminal value can, but it's no independent check on the DCF: it uses the same FCF and the same growth rates.",
+		],
+		goodFor: "Businesses with positive, steady, growing free cash flow — the same companies DCF and Ten Cap suit. Unaffected by buybacks or a thin balance sheet, since book value never enters into it.",
+		useCaution: "It's undiscounted — a year-8 dollar counts the same as one today, so an 8-year undiscounted payback is closer to 11–12 years at a 10% discount rate; the 8-year bar is looser than it sounds. Meaningless for negative or erratic FCF (shows \"—\"), early-stage capex-heavy growers whose FCF is depressed by design, cyclicals at peak FCF, and financials/insurers where FCF isn't a meaningful number.",
+		sources: [
+			{ label: "How to Invest: Margin of Safety & Payback Time — Rule #1 Investing", url: "https://www.ruleoneinvesting.com/blog/how-to-invest/how-to-invest-margin-of-safety-payback-time/" },
+			{ label: "Payback period — Wikipedia", url: "https://en.wikipedia.org/wiki/Payback_period" },
+		],
+	},
 ];
 
 export const DOCS_OTHER_INTRO: string =
-	"This plugin only computes the four methods above. If a company doesn't fit any of them well — most commonly conglomerates/holding companies, financials and insurers, or non-dividend payers being judged on distributions — these are the standard next tools, worth doing by hand:";
+	"This plugin only computes the methods above. If a company doesn't fit any of them well — most commonly conglomerates/holding companies, or financials and insurers — these are the standard next tools, worth doing by hand:";
 
 export const OTHER_METHODS: OtherMethod[] = [
-	{
-		title: "Dividend Discount Model (DDM / Gordon Growth)",
-		oneLiner: "Values a stock as the present value of future dividends: V = D₁ / (r − g). Needs a long, stable dividend history that genuinely reflects distributable earnings — fits mature dividend payers (utilities, staples, mature banks), not growth companies or non-payers.",
-		url: "https://en.wikipedia.org/wiki/Dividend_discount_model",
-	},
 	{
 		title: "Earnings Power Value (EPV)",
 		oneLiner: "EPV = Adjusted NOPAT / WACC. Values the business as if current earnings simply continue forever with zero growth — a floor/sanity check, not a growth valuation. Useful for mature, moderate-growth businesses; radically undervalues anything whose thesis depends on expanding earnings power.",

@@ -10,6 +10,10 @@ function normalizeFolderPath(value: string): string {
 	return value.trim().replace(/\/+$/, "");
 }
 
+// Shared by both settings surfaces (display() and getSettingDefinitions()).
+const HISTORY_FOLDER_DESC =
+	"Vault folder for each ticker's auto-generated TICKER-history.md note — its whole valuation history, one row per saved valuation or price refresh (folders are created automatically; blank means the vault root). Only the ticker that changed is rewritten, never all of them. Don't hand-edit these notes, changes there won't stick. Changing this doesn't move notes already written — new writes just go to the new folder.";
+
 type NumberSettingKey = "marketRiskPremium" | "taxRate" | "maintenanceCapexPct" | "aaaBondYield";
 
 type ScaleSettingKey = "defaultMoneyScale" | "defaultSharesScale";
@@ -25,7 +29,7 @@ export interface StockValuationsSettings {
 	aaaBondYield: number; // Graham's Y, %
 	defaultMoneyScale: ScaleUnit; // default scale for dollar aggregates (debt, FCF, OCF, ...)
 	defaultSharesScale: ScaleUnit; // default scale for share counts
-	valuationsNotePath: string; // vault path to the auto-generated summary note
+	historyNotesFolder: string; // vault folder each ticker's auto-generated TICKER-history.md note goes in
 
 	// Optional features — off by default, this being the first. Each one is a
 	// self-contained toggle; add more here rather than growing new top-level
@@ -41,15 +45,14 @@ export const DEFAULT_SETTINGS: StockValuationsSettings = {
 	aaaBondYield: 5,
 	defaultMoneyScale: "millions",
 	defaultSharesScale: "millions",
-	valuationsNotePath: "Stock Valuations/Stock Valuations.md",
+	historyNotesFolder: "Stock Valuations",
 	enableResearchLinks: false,
 	researchNotesFolder: "",
 };
 
 // The research-links feature needs both the toggle on and a folder to create
 // notes in — there's no shipped default folder, so the toggle alone isn't
-// enough. Shared by the table view and the vault summary note so both agree
-// on when the Research column is actually showing.
+// enough. The single place that decides whether the Research column shows.
 export function researchLinksActive(settings: StockValuationsSettings): boolean {
 	return settings.enableResearchLinks && settings.researchNotesFolder.trim().length > 0;
 }
@@ -66,18 +69,16 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl).setName("Vault summary note").setHeading();
+		new Setting(containerEl).setName("Vault history notes").setHeading();
 		new Setting(containerEl)
-			.setName("Note path")
-			.setDesc(
-				"Vault path to the auto-generated summary table (folders are created automatically). Rewritten in full on every save or delete — don't hand-edit it, changes there won't stick."
-			)
+			.setName("History notes folder")
+			.setDesc(HISTORY_FOLDER_DESC)
 			.addText((text) =>
 				text
-					.setPlaceholder(DEFAULT_SETTINGS.valuationsNotePath)
-					.setValue(this.plugin.data.settings.valuationsNotePath)
+					.setPlaceholder(DEFAULT_SETTINGS.historyNotesFolder)
+					.setValue(this.plugin.data.settings.historyNotesFolder)
 					.onChange(async (value) => {
-						this.plugin.data.settings.valuationsNotePath = value.trim() || DEFAULT_SETTINGS.valuationsNotePath;
+						this.plugin.data.settings.historyNotesFolder = normalizeFolderPath(value);
 						await this.plugin.data.saveSettings();
 					})
 			);
@@ -178,8 +179,8 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 	}
 
 	// Not a hard gate — createAndLinkResearchNote() (view.ts) creates the
-	// folder if it's missing when you actually add a note, same as the vault
-	// summary note path always has. This just flags a likely typo early.
+	// folder if it's missing when you actually add a note, same as the history
+	// notes folder always has. This just flags a likely typo early.
 	private researchFolderWarning(path: string): string | undefined {
 		if (!path) return undefined;
 		const existing = this.app.vault.getAbstractFileByPath(path);
@@ -202,16 +203,16 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		return [
 			{
 				type: "group",
-				heading: "Vault summary note",
+				heading: "Vault history notes",
 				items: [
 					{
-						name: "Note path",
-						desc: "Vault path to the auto-generated summary table (folders are created automatically). Rewritten in full on every save or delete — don't hand-edit it, changes there won't stick.",
+						name: "History notes folder",
+						desc: HISTORY_FOLDER_DESC,
 						control: {
 							type: "text",
-							key: "valuationsNotePath",
-							placeholder: DEFAULT_SETTINGS.valuationsNotePath,
-							defaultValue: DEFAULT_SETTINGS.valuationsNotePath,
+							key: "historyNotesFolder",
+							placeholder: DEFAULT_SETTINGS.historyNotesFolder,
+							defaultValue: DEFAULT_SETTINGS.historyNotesFolder,
 						},
 					},
 				],
@@ -296,9 +297,8 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 
 	setControlValue(key: string, value: unknown): void {
 		const settings = this.plugin.data.settings as unknown as Record<string, unknown>;
-		if (key === "valuationsNotePath") {
-			const trimmed = typeof value === "string" ? value.trim() : "";
-			settings[key] = trimmed || DEFAULT_SETTINGS.valuationsNotePath;
+		if (key === "historyNotesFolder") {
+			settings[key] = typeof value === "string" ? normalizeFolderPath(value) : "";
 		} else if (key === "researchNotesFolder") {
 			const trimmed = typeof value === "string" ? normalizeFolderPath(value) : "";
 			settings[key] = trimmed;

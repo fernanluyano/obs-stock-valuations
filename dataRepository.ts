@@ -1,6 +1,7 @@
 import type { StockValuationsSettings } from "./settings";
 import { CURRENT_SCHEMA_VERSION, LegacySavedValuation, migrateValuationsToV2 } from "./migrations";
 import type { SavedValuation, ValuationTable } from "./valuationStore";
+import { computeResultsForState } from "./valuationCalc";
 import type { MacroRow } from "./macro";
 
 // ^TNX is an end-of-day index snapshot, not a tick-by-tick quote — it only
@@ -50,10 +51,17 @@ export interface PluginDataAdapter {
 	saveData(data: unknown): Promise<void>;
 }
 
-// Regenerates the vault summary note from the current valuations table.
-// Injected instead of imported directly so DataRepository never needs a real
-// Obsidian App/Vault to be unit tested.
-export type NoteSyncFn = (valuations: ValuationTable) => Promise<void>;
+// Regenerates one ticker's vault history note (TICKER-history.md) from its
+// record. Injected instead of imported directly so DataRepository never
+// needs a real Obsidian App/Vault to be unit tested.
+export type NoteSyncFn = (ticker: string, record: SavedValuation) => Promise<void>;
+
+// Settings carry-over: the old single summary note setting
+// (valuationsNotePath, a file path) became historyNotesFolder (a folder).
+// A vault that customized the old path keeps its notes in that same folder.
+function folderOfPath(path: string): string {
+	return path.split("/").slice(0, -1).join("/");
+}
 
 // Fetches the current risk-free rate (10-year Treasury yield), or null on
 // failure. Injected rather than importing priceProvider.ts directly — that
@@ -84,7 +92,7 @@ export class DataRepository {
 		private readonly adapter: PluginDataAdapter,
 		private readonly defaultSettings: StockValuationsSettings,
 		private readonly syncNote: NoteSyncFn,
-		private readonly onNoteSyncError: (error: unknown) => void = () => {},
+		private readonly onNoteSyncError: (error: unknown, ticker: string) => void = () => {},
 		private readonly fetchRfr: FetchRfrFn = () => Promise.resolve(null),
 		private readonly fetchMacro: FetchMacroDataFn = () => Promise.resolve(null)
 	) {
@@ -98,7 +106,17 @@ export class DataRepository {
 		const data = ((await this.adapter.loadData()) ?? {}) as Partial<PluginData> & {
 			valuations?: Record<string, LegacySavedValuation> | ValuationTable;
 		};
-		this.settings = Object.assign({}, this.defaultSettings, data.settings);
+		// valuationsNotePath is the retired summary-note setting — dropped from
+		// settings, but used once to seed historyNotesFolder (see folderOfPath)
+		// if that's never been set. Nothing is written back here; the old key
+		// just disappears from data.json on the next save.
+		const { valuationsNotePath, ...savedSettings } = (data.settings ?? {}) as Partial<StockValuationsSettings> & {
+			valuationsNotePath?: unknown;
+		};
+		this.settings = Object.assign({}, this.defaultSettings, savedSettings);
+		if (savedSettings.historyNotesFolder === undefined && typeof valuationsNotePath === "string") {
+			this.settings.historyNotesFolder = folderOfPath(valuationsNotePath);
+		}
 		this.lastSeenVersion = data.lastSeenVersion;
 		this.rfrCache = data.rfrCache;
 		this.macroCache = data.macroCache;
@@ -111,20 +129,50 @@ export class DataRepository {
 		if (schemaVersion >= CURRENT_SCHEMA_VERSION) {
 			this.valuations = (data.valuations as ValuationTable) ?? {};
 			this.schemaVersion = schemaVersion;
+			this.recomputeAllResults();
 			return;
 		}
 
 		this.valuations = migrateValuationsToV2((data.valuations as Record<string, LegacySavedValuation>) ?? {});
 		this.schemaVersion = CURRENT_SCHEMA_VERSION;
-		// Persist right away so data.json and the vault summary note both move
-		// to the new shape immediately — a vault that's only ever viewed, never
-		// edited, still ends up migrated instead of stuck on the old shape.
-		await this.persistValuations();
+		this.recomputeAllResults();
+		// Persist right away so data.json moves to the new shape immediately — a
+		// vault that's only ever viewed, never edited, still ends up migrated
+		// instead of stuck on the old shape. No history notes are written here
+		// (or anywhere in bulk) — each ticker's note is written only when that
+		// ticker is saved, refreshed, or has its history edited.
+		await this.writeToDisk();
+	}
+
+	// Saved results are a cache of computeResultsForState(state), never the
+	// source of truth — so they're rebuilt from each scenario's saved inputs on
+	// every load instead of trusted as read. That way the in-memory table can't
+	// carry anything JSON couldn't round-trip (NaN, a non-payer's DDM or an
+	// unanswerable reverse DCF, is written as null and would otherwise come
+	// back as null — which passes the global isFinite() as 0), can't miss a
+	// result field added after the record was saved, and picks up any formula
+	// fix without a re-save. In memory only — nothing is written back here —
+	// and computed from a copy of each state, so the saved inputs themselves
+	// (including mktCap, which computeResultsForState otherwise rewrites) are
+	// untouched. History entries are snapshots of the past, not derived, so
+	// they're left exactly as saved.
+	private recomputeAllResults(): void {
+		for (const record of Object.values(this.valuations)) {
+			for (const scenario of Object.values(record.scenarios)) {
+				scenario.results = computeResultsForState(
+					{ ...scenario.state },
+					record.moneyScale,
+					record.sharesScale,
+					this.settings.taxRate
+				);
+			}
+		}
 	}
 
 	// Writes settings (and everything else in the blob, unchanged) to disk. No
-	// vault note resync — the note only ever reflects valuations, which
-	// haven't changed.
+	// history notes are rewritten — they only ever reflect a ticker's history,
+	// which hasn't changed (and a changed history notes folder applies to the
+	// next write, not retroactively).
 	async saveSettings(): Promise<void> {
 		await this.writeToDisk();
 	}
@@ -197,29 +245,44 @@ export class DataRepository {
 	}
 
 	// Replaces (or creates) one ticker's record wholesale and persists — the
-	// calculator form's Save button.
+	// calculator form's Save button. Rewrites only that ticker's history note.
 	async saveValuation(ticker: string, record: SavedValuation): Promise<void> {
 		this.valuations[ticker] = record;
-		await this.persistValuations();
+		await this.persistValuations([ticker]);
 	}
 
+	// The ticker's history note is deliberately left in the vault — it's a
+	// record of that history, and only the plugin's own data is deleted.
 	async deleteValuation(ticker: string): Promise<void> {
 		delete this.valuations[ticker];
-		await this.persistValuations();
+		await this.persistValuations([]);
 	}
 
-	// Writes the current valuations table to disk and resyncs the vault
-	// summary note. saveValuation()/deleteValuation() call this internally;
-	// call it directly after mutating a record obtained from getValuation() in
-	// place (history edits, research-note linking) or after a batch of such
-	// mutations (price refresh).
-	async persistValuations(): Promise<void> {
+	// Writes the current valuations table to disk, then rewrites the history
+	// note of each ticker in `changedTickers` — and only those; every other
+	// ticker's note is left alone. saveValuation()/deleteValuation() call this
+	// internally; call it directly after mutating a record obtained from
+	// getValuation() in place, naming whichever tickers' history changed:
+	// [ticker] for a history delete/compact, every refreshed ticker after a
+	// price refresh, [] for a change that doesn't touch history (research-note
+	// linking).
+	async persistValuations(changedTickers: string[]): Promise<void> {
 		await this.writeToDisk();
+		for (const ticker of changedTickers) {
+			const record = this.valuations[ticker];
+			if (record) await this.syncTickerNote(ticker, record);
+		}
+	}
+
+	// One note write, with failures reported (not thrown) — data.json is
+	// already saved by the time any note is written, so a note failure must
+	// never look like the save itself failed.
+	private async syncTickerNote(ticker: string, record: SavedValuation): Promise<void> {
 		try {
-			await this.syncNote(this.valuations);
+			await this.syncNote(ticker, record);
 		} catch (e) {
-			console.error("Stock Valuations: failed to write summary note", e);
-			this.onNoteSyncError(e);
+			console.error(`Stock Valuations: failed to write ${ticker}'s history note`, e);
+			this.onNoteSyncError(e, ticker);
 		}
 	}
 

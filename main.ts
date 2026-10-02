@@ -1,11 +1,8 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { StockValuationsView, VIEW_TYPE_STOCK_VALUATIONS } from "./view";
-import {
-	DEFAULT_SETTINGS,
-	researchLinksActive,
-	StockValuationsSettingTab,
-} from "./settings";
-import { syncValuationsNote } from "./noteSync";
+import { DEFAULT_SETTINGS, StockValuationsSettingTab } from "./settings";
+import { syncHistoryNote } from "./noteSync";
+import { historyNotePath } from "./noteContent";
 import { DataRepository } from "./dataRepository";
 import { fetchRiskFreeRate } from "./priceProvider";
 import { fetchMacroData } from "./macro";
@@ -17,15 +14,17 @@ export default class StockValuationsPlugin extends Plugin {
 		this.data = new DataRepository(
 			this,
 			DEFAULT_SETTINGS,
-			(valuations) =>
-				syncValuationsNote(
-					this.app,
-					this.data.settings.valuationsNotePath,
-					valuations,
-					researchLinksActive(this.data.settings)
+			(ticker, record) => syncHistoryNote(this.app, this.data.settings.historyNotesFolder, ticker, record),
+			// The failure isn't necessarily the path — any error while building
+			// or writing the note lands here — so say what failed and include
+			// the actual error rather than guessing at a cause.
+			(e, ticker) =>
+				new Notice(
+					`Saved, but couldn't update ${historyNotePath(this.data.settings.historyNotesFolder, ticker)}: ${
+						e instanceof Error ? e.message : String(e)
+					}`,
+					10000
 				),
-			(_e) =>
-				new Notice("Saved, but couldn't update the vault summary note — check the note path in settings."),
 			fetchRiskFreeRate,
 			fetchMacroData
 		);

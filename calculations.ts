@@ -11,8 +11,14 @@ export interface WaccInputs {
 	mktCap: number; // market capitalization
 }
 
+// CAPM. Exposed on its own (not just inside calcWacc) because the DDM
+// discounts at cost of equity, not WACC — dividends go to shareholders only.
+export function calcCostOfEquity(rfr: number, beta: number, mrp: number): number {
+	return rfr + beta * mrp;
+}
+
 export function calcWacc(i: WaccInputs): number {
-	const costOfEquity = i.rfr + i.beta * i.mrp; // CAPM
+	const costOfEquity = calcCostOfEquity(i.rfr, i.beta, i.mrp);
 	const costOfDebt = i.totDebt === 0 ? 0 : i.intExp / i.totDebt;
 	const afterTaxCostOfDebt = costOfDebt * (1 - i.taxRate);
 
@@ -213,6 +219,60 @@ export function calcTenCapGrid(
 	return { capexMultipliers, mainPctValues, grid };
 }
 
+export interface DdmInputs {
+	dps: number; // trailing twelve month dividends per share (D0)
+	growth: number; // expected dividend growth rate, held constant forever
+	costOfEquity: number; // ke, the discount rate
+}
+
+// Gordon Growth dividend discount model: D1 / (ke − g), with D1 = D0 × (1+g).
+// NaN for a non-payer (D0 ≤ 0) — the model has nothing to value — and when
+// g ≥ ke, where the formula stops meaning anything (infinite or negative).
+export function calcDdm(i: DdmInputs): number {
+	if (!(i.dps > 0)) return NaN;
+	if (i.growth >= i.costOfEquity) return NaN;
+	return (i.dps * (1 + i.growth)) / (i.costOfEquity - i.growth);
+}
+
+// Fixed, recognizable round-number axes for the DDM sensitivity grid — same
+// reasoning as DCF_GRID_*. The axes overlap on purpose: cells where g ≥ ke
+// show as "—", which itself shows where the model breaks down.
+export const DDM_GRID_KE_VALUES = [0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12];
+export const DDM_GRID_GROWTH_VALUES = [0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08];
+
+export interface DdmGrid {
+	keValues: number[];
+	growthValues: number[]; // one row per value
+	// grid[rowIdx][colIdx] = calcDdm(...) fair value for that (growth, ke)
+	// pair, holding dps at inputs' current value. null wherever calcDdm has
+	// no answer — g ≥ ke, or a non-payer (every cell).
+	grid: (number | null)[][];
+}
+
+// 2D sensitivity read on the DDM's two judgment calls: the discount rate and
+// the perpetual dividend growth rate. dps is a fact, so it stays fixed.
+export function calcDdmGrid(
+	inputs: DdmInputs,
+	keValues: number[] = DDM_GRID_KE_VALUES,
+	growthValues: number[] = DDM_GRID_GROWTH_VALUES
+): DdmGrid {
+	const grid = growthValues.map((g) =>
+		keValues.map((ke) => {
+			const v = calcDdm({ ...inputs, growth: g, costOfEquity: ke });
+			return isNaN(v) ? null : v;
+		})
+	);
+	return { keValues, growthValues, grid };
+}
+
+// Whether a method has an intrinsic value worth showing anything more for
+// (e.g. a sensitivity grid) — true if any of the given IVs (typically one per
+// scenario) is a real, non-zero number. 0 counts as "nothing entered": a
+// blank form computes $0 for Graham (EPS 0), Ten Cap (no cash flow), etc.
+export function hasIntrinsicValue(ivs: number[]): boolean {
+	return ivs.some((v) => isFinite(v) && v !== 0);
+}
+
 // Margin of safety: how far below intrinsic value the current price trades, as a %.
 export function marginOfSafety(intrinsicValue: number, price: number): number {
 	if (!isFinite(intrinsicValue) || intrinsicValue === 0) return NaN;
@@ -223,4 +283,64 @@ export function marginOfSafety(intrinsicValue: number, price: number): number {
 export function ownerEarningsYield(ownerEarnings: number, shares: number, price: number): number {
 	if (shares === 0 || price === 0) return NaN;
 	return (ownerEarnings / shares / price) * 100;
+}
+
+export interface PaybackInputs {
+	fcf: number; // trailing twelve month free cash flow (base year)
+	growth1to5: number; // FCF growth rate, years 1-5
+	growth6to10: number; // FCF growth rate, years 6-10
+	terminalGrowth: number; // FCF growth rate past year 10
+	mktCap: number;
+	netDebt: number;
+}
+
+// Past this, "how many years" stops being a meaningful answer — reported as
+// Infinity (shown as "> 30 yrs") rather than looping toward a huge number.
+export const PAYBACK_MAX_YEARS = 30;
+
+// Payback color bands. 8 is Phil Town's own buy rule. 10 isn't Town's
+// payback rule but his Ten Cap one — 10x owner earnings is a 10-year payback
+// at zero growth — and also where the DCF's explicit 10-year projection
+// hands off to terminal growth, so a payback past it leans on cash the
+// growth inputs never actually forecast.
+export const PAYBACK_GOOD_YEARS = 8;
+export const PAYBACK_OK_YEARS = 10;
+
+export type PaybackTone = "pos" | "warn" | "neg";
+
+// null when there's no payback to judge (FCF ≤ 0); Infinity (never within
+// PAYBACK_MAX_YEARS) is just a very long payback, so "neg".
+export function paybackTone(years: number): PaybackTone | null {
+	if (isNaN(years)) return null;
+	if (years <= PAYBACK_GOOD_YEARS) return "pos";
+	if (years <= PAYBACK_OK_YEARS) return "warn";
+	return "neg";
+}
+
+// Phil Town's Payback Time: years of growing FCF it takes to add up to what
+// buying the whole business costs today. Undiscounted by design (that's the
+// method), but measured against enterprise value (market cap + net debt)
+// rather than Town's market cap alone, so debt you'd also be taking on isn't
+// ignored. Growth follows the DCF's own stages year by year — g1-5, then
+// g6-10, then terminal growth — so it stays consistent with the DCF and gets
+// a value per scenario. The final, partial year is interpolated linearly
+// (cash assumed to arrive evenly through the year). NaN when base FCF isn't
+// positive (no payback to speak of); 0 when EV is already ≤ 0 (net cash
+// covers the market cap).
+export function calcPaybackTime(i: PaybackInputs): number {
+	if (!(i.fcf > 0)) return NaN;
+	const target = i.mktCap + i.netDebt;
+	if (target <= 0) return 0;
+
+	let cumulative = 0;
+	let yearFcf = i.fcf;
+	for (let year = 1; year <= PAYBACK_MAX_YEARS; year++) {
+		const g = year <= 5 ? i.growth1to5 : year <= 10 ? i.growth6to10 : i.terminalGrowth;
+		yearFcf *= 1 + g;
+		if (yearFcf > 0 && cumulative + yearFcf >= target) {
+			return year - 1 + (target - cumulative) / yearFcf;
+		}
+		cumulative += yearFcf;
+	}
+	return Infinity;
 }

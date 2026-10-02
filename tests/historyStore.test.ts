@@ -48,6 +48,9 @@ function fixtureState(overrides: Partial<FormState> = {}): FormState {
 		ocf: "1000",
 		capex: "400",
 		mainPct: "50",
+
+		dps: "",
+		ddmGrowth: "",
 		...overrides,
 	};
 }
@@ -63,21 +66,25 @@ function fixtureResults(overrides: Partial<Results> = {}): Results {
 		tenCapIv: 45,
 		tenCapYield: 0.08,
 		tenCapMos: -0.1,
+		ddmIv: NaN,
+		ddmMos: NaN,
+		costOfEquity: 0.1,
+		paybackYears: 7,
 		...overrides,
 	};
 }
 
 function fixtureScenarios(overrides: Partial<Record<ScenarioKey, Scenario>> = {}): Record<ScenarioKey, Scenario> {
 	return {
-		bear: { state: fixtureState(), results: fixtureResults({ dcfIv: 40, grahamIv: 45 }) },
-		base: { state: fixtureState(), results: fixtureResults({ dcfIv: 60, grahamIv: 55, tenCapIv: 45, impliedGrowth: 0.07 }) },
-		bull: { state: fixtureState(), results: fixtureResults({ dcfIv: 80, grahamIv: 65 }) },
+		bear: { state: fixtureState(), results: fixtureResults({ dcfIv: 40, grahamIv: 45, ddmIv: 30 }) },
+		base: { state: fixtureState(), results: fixtureResults({ dcfIv: 60, grahamIv: 55, ddmIv: 50, tenCapIv: 45, impliedGrowth: 0.07 }) },
+		bull: { state: fixtureState(), results: fixtureResults({ dcfIv: 80, grahamIv: 65, ddmIv: 70 }) },
 		...overrides,
 	};
 }
 
 describe("buildHistoryEntry", () => {
-	it("maps each scenario's DCF/Graham IV into its Bear/Base/Bull field", () => {
+	it("maps each scenario's DCF/Graham/DDM IV into its Bear/Base/Bull field", () => {
 		const entry = buildHistoryEntry(at(2024, 0, 15), fixtureScenarios());
 
 		expect(entry).toEqual(
@@ -92,8 +99,23 @@ describe("buildHistoryEntry", () => {
 				grahamBullIv: 65,
 				tenCapIv: 45,
 				impliedGrowth: 0.07,
+				ddmBearIv: 30,
+				ddmBaseIv: 50,
+				ddmBullIv: 70,
 			})
 		);
+	});
+
+	it("records a non-payer's DDM as NaN in every scenario", () => {
+		const scenarios = fixtureScenarios({
+			bear: { state: fixtureState(), results: fixtureResults() },
+			base: { state: fixtureState(), results: fixtureResults() },
+			bull: { state: fixtureState(), results: fixtureResults() },
+		});
+		const entry = buildHistoryEntry(Date.now(), scenarios);
+		expect(entry.ddmBearIv).toBeNaN();
+		expect(entry.ddmBaseIv).toBeNaN();
+		expect(entry.ddmBullIv).toBeNaN();
 	});
 
 	it("reads price, Ten Cap IV, and implied growth off Base, ignoring Bear/Bull for those", () => {

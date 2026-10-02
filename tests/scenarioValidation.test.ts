@@ -32,6 +32,9 @@ function fixtureState(overrides: Partial<FormState> = {}): FormState {
 		ocf: "1000",
 		capex: "400",
 		mainPct: "50",
+
+		dps: "",
+		ddmGrowth: "",
 		...overrides,
 	};
 }
@@ -46,6 +49,10 @@ const blankResults: Results = {
 	tenCapIv: 0,
 	tenCapYield: 0,
 	tenCapMos: 0,
+	ddmIv: 0,
+	ddmMos: 0,
+	costOfEquity: 0,
+	paybackYears: 0,
 };
 
 function scenario(stateOverrides: Partial<FormState> = {}): Scenario {
@@ -53,12 +60,12 @@ function scenario(stateOverrides: Partial<FormState> = {}): Scenario {
 }
 
 // Bear/base/bull growth fixtures consistent with bear <= base <= bull for
-// all four scenario-specific fields, then overridden per test.
+// all five scenario-specific fields, then overridden per test.
 function fixtureScenarios(overrides: Partial<Record<ScenarioKey, Partial<FormState>>> = {}): Record<ScenarioKey, Scenario> {
 	return {
-		bear: scenario({ growth1to5: "2", growth6to10: "1", terminalGrowth: "1", grahamGrowth: "2", ...overrides.bear }),
-		base: scenario({ growth1to5: "8", growth6to10: "4", terminalGrowth: "2", grahamGrowth: "8", ...overrides.base }),
-		bull: scenario({ growth1to5: "15", growth6to10: "8", terminalGrowth: "3", grahamGrowth: "15", ...overrides.bull }),
+		bear: scenario({ growth1to5: "2", growth6to10: "1", terminalGrowth: "1", grahamGrowth: "2", ddmGrowth: "1", ...overrides.bear }),
+		base: scenario({ growth1to5: "8", growth6to10: "4", terminalGrowth: "2", grahamGrowth: "8", ddmGrowth: "3", ...overrides.base }),
+		bull: scenario({ growth1to5: "15", growth6to10: "8", terminalGrowth: "3", grahamGrowth: "15", ddmGrowth: "5", ...overrides.bull }),
 	};
 }
 
@@ -102,6 +109,18 @@ describe("validateScenarios", () => {
 		const errors = validateScenarios(scenarios);
 		expect(errors).toHaveLength(1);
 		expect(errors[0]).toContain("Expected EPS growth, 7-10yr");
+	});
+
+	it("flags dividend growth when out of order", () => {
+		const scenarios = fixtureScenarios({ bear: { ddmGrowth: "4" } });
+		const errors = validateScenarios(scenarios);
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain("Expected dividend growth");
+	});
+
+	it("skips dividend growth when it's blank (a non-payer)", () => {
+		const scenarios = fixtureScenarios({ bear: { ddmGrowth: "" }, base: { ddmGrowth: "" }, bull: { ddmGrowth: "" } });
+		expect(validateScenarios(scenarios)).toEqual([]);
 	});
 
 	it("reports one violation per offending field, not just the first", () => {

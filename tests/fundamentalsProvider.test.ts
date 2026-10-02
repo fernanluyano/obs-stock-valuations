@@ -294,6 +294,39 @@ describe("deriveFundamentals", () => {
 		expect(result.taxRate.note).toMatch(/isn't meaningful/i);
 	});
 
+	// Quarterly payer: $0.50/quarter last fiscal year, raised to $0.55 this
+	// year — TTM = FY 2.00 + 2 quarters at 0.55 − the 2 year-ago quarters at 0.50.
+	const DPS_FACTS: SecFact[] = [
+		fact({ start: "2025-01-01", end: "2025-12-31", val: 2.0, fy: 2025, fp: "FY", filed: "2026-02-15" }),
+		fact({ start: "2025-01-01", end: "2025-06-30", val: 1.0, fy: 2025, fp: "Q2", form: "10-Q", filed: "2025-08-01" }),
+		fact({ start: "2026-01-01", end: "2026-06-30", val: 1.1, fy: 2026, fp: "Q2", form: "10-Q", filed: "2026-08-01" }),
+	];
+	const NOW = new Date("2026-10-01");
+
+	it("derives TTM dividends per share from the declared-dividends tag", () => {
+		const gaap: Record<string, SecConcept> = {
+			CommonStockDividendsPerShareDeclared: concept(DPS_FACTS, "USD/shares"),
+		};
+		const result = deriveFundamentals(makeCompanyFacts(gaap), "div", NOW);
+		expect(result.dps.value).toBeCloseTo(2.0 + 1.1 - 1.0, 10);
+		expect(result.dps.basis).toBe("ttm");
+	});
+
+	it("falls back to the cash-paid dividends tag when declared isn't reported", () => {
+		const gaap: Record<string, SecConcept> = {
+			CommonStockDividendsPerShareCashPaid: concept(DPS_FACTS, "USD/shares"),
+		};
+		const result = deriveFundamentals(makeCompanyFacts(gaap), "div", NOW);
+		expect(result.dps.value).toBeCloseTo(2.1, 10);
+	});
+
+	it("leaves dividends per share unresolved for a non-payer, noting the DDM doesn't apply", () => {
+		const result = deriveFundamentals(makeCompanyFacts({}), "nodiv", NOW);
+		expect(result.dps.value).toBeNull();
+		expect(result.dps.note).toMatch(/non-payer/i);
+		expect(result.dps.note).toMatch(/DDM/);
+	});
+
 	it("flags total debt as partial when only one of the two debt tags is present", () => {
 		const gaap: Record<string, SecConcept> = {
 			LongTermDebtNoncurrent: concept([fact({ end: "2025-01-01", val: 1000 })]),

@@ -1,3 +1,5 @@
+import { PAYBACK_MAX_YEARS } from "./calculations";
+
 // Strips a typed value down to a plain numeric string (digits, one leading "-",
 // one ".") — used while an input is focused, so raw typing isn't fighting comma
 // insertion mid-keystroke.
@@ -24,9 +26,15 @@ export function formatWithCommas(raw: string): string {
 	return (neg ? "-" : "") + formattedInt + (fracPart !== undefined ? "." + fracPart : "");
 }
 
+// The formatters below check with Number.isFinite, never the global
+// isFinite: the global one coerces first, so isFinite(null) is true (null ->
+// 0), and a null that slipped in from JSON (where NaN is stored as null)
+// would get past it and crash on null.toLocaleString(). Number.isFinite is
+// false for anything that isn't already a real, finite number.
+
 // Comma-formats a computed number for display (results table, inserted note).
 export function formatCurrency(value: number, decimals = 2): string {
-	if (!isFinite(value)) return "—";
+	if (!Number.isFinite(value)) return "—";
 	return `$${value.toLocaleString(undefined, {
 		minimumFractionDigits: decimals,
 		maximumFractionDigits: decimals,
@@ -34,9 +42,21 @@ export function formatCurrency(value: number, decimals = 2): string {
 }
 
 export function formatPercent(value: number, decimals = 2): string {
-	if (!isFinite(value)) return "—";
+	if (!Number.isFinite(value)) return "—";
 	return `${value.toLocaleString(undefined, {
 		minimumFractionDigits: decimals,
 		maximumFractionDigits: decimals,
 	})}%`;
+}
+
+// Payback Time display: NaN (no positive FCF to pay anything back) is "—";
+// Infinity means it never paid back within PAYBACK_MAX_YEARS, shown as a
+// floor ("> 30 yrs") rather than a made-up number.
+export function formatYears(value: number, decimals = 1): string {
+	if (value === Infinity) return `> ${PAYBACK_MAX_YEARS} yrs`;
+	if (!Number.isFinite(value)) return "—";
+	return `${value.toLocaleString(undefined, {
+		minimumFractionDigits: decimals,
+		maximumFractionDigits: decimals,
+	})} yrs`;
 }

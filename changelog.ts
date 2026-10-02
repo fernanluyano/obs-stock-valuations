@@ -8,6 +8,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "1.0.0",
+		highlights: [
+			"🎉 1.0 — the plugin's been tested enough to call it stable",
+			"🗒️ The single all-tickers summary note is replaced by one note per ticker — TICKER-history.md (e.g. ADBE-history.md) holds that ticker's whole valuation history, one row per saved valuation or price refresh, newest first. Only the ticker that changed is rewritten, instead of every ticker on every save. A ticker's note first appears the next time you save or refresh it. The old summary note is no longer updated but is left untouched — delete it whenever you like. Settings → \"History notes folder\" (default: the folder your summary note was in) sets where they go",
+			"⏳ New \"Payback Time\" row in the results panel's Other metrics table, right below Ten Cap's owner-earnings yield — Phil Town's years-to-recoup metric: how many years of growing FCF it takes to add up to enterprise value (market cap + net debt). FCF compounds at each scenario's own DCF growth rates (years 1–5, 6–10, then terminal growth), so Bull/Base/Bear each get their own number. Colored green at 8 years or less (Town's buy rule), yellow up to 10, red beyond; see Help for the full method and its caveats",
+			"💵 New DDM (dividend discount model) method, for dividend payers only — D₁ ÷ (kₑ − g), discounted at cost of equity (now shown in Other metrics) rather than WACC. Dividend growth is a Bull/Base/Bear input, and \"Fetch data\" fills in trailing dividends per share from SEC EDGAR. Non-payers show \"—\". Shows up everywhere DCF and Graham do: Bear/Base/Bull columns in the saved-valuations table, the margin-of-safety charts, and valuation history (table, chart, and history note)",
+			"📊 New DDM sensitivity grid (cost of equity × dividend growth). Every sensitivity grid now only appears once at least one case has a fair value for that method, instead of showing an empty grid",
+			"🔧 Bull/Bear results now update live when you edit a shared field on Base — previously they only caught up on Save, so the margin-of-safety chart could lag behind what you'd typed",		],
+	},
+	{
 		version: "0.10.0",
 		highlights: [
 			"📊 New \"Macro\" screen — Shiller CAPE, TR-CAPE, dividend yield, and 10-year Treasury yield as of the latest month, plus three charts: CAPE/TR-CAPE over time, 10-year yield over time (both over a rolling 40-year window), and S&P 500 nominal vs. inflation-adjusted over the last 10 years. No cheap/fair/expensive verdict — just the numbers and the history, left for you to judge",

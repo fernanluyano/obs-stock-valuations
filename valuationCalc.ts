@@ -2,7 +2,7 @@
 // fields into real numbers and runs them through the calculations.ts
 // formulas. Kept pure and Obsidian-free so it can be unit tested directly —
 // see tests/valuationCalc.test.ts.
-import { calcDcf, calcGraham, calcImpliedGrowth, calcTenCap, calcWacc, marginOfSafety, ownerEarningsYield } from "./calculations";
+import { calcCostOfEquity, calcDcf, calcDdm, calcGraham, calcImpliedGrowth, calcPaybackTime, calcTenCap, calcWacc, marginOfSafety, ownerEarningsYield } from "./calculations";
 import { SCALE_MULTIPLIERS, ScaleUnit } from "./units";
 import { FormState, Results } from "./valuationStore";
 
@@ -25,6 +25,7 @@ export const PERCENT_KEYS = new Set<keyof FormState>([
 	"grahamGrowth",
 	"aaaYield",
 	"mainPct",
+	"ddmGrowth",
 ]);
 
 // Converts one form field to its real-world numeric value, undoing whichever
@@ -70,7 +71,7 @@ export function deriveMarketCap(
 // runs, so it can never drift from price × shares or be hand-edited. Shared
 // by the live form and by refreshAllPrices, which recomputes a saved
 // record's IV/MoS after updating just its price — same math, no fundamentals
-// touched, so Graham/Ten Cap IV are unchanged; DCF IV and WACC do move,
+// touched, so Graham/Ten Cap/DDM IV are unchanged; DCF IV and WACC do move,
 // since market cap (and so WACC) is itself price-derived.
 export function computeResultsForState(
 	state: FormState,
@@ -118,9 +119,13 @@ export function computeResultsForState(
 		shares: n("shares"),
 	});
 
+	const costOfEquity = calcCostOfEquity(n("rfr"), n("beta"), n("mrp"));
+	const ddmIv = calcDdm({ dps: n("dps"), growth: n("ddmGrowth"), costOfEquity });
+
 	const price = n("price");
 	return {
 		wacc,
+		costOfEquity,
 		dcfIv,
 		dcfMos: marginOfSafety(dcfIv, price),
 		impliedGrowth,
@@ -129,5 +134,15 @@ export function computeResultsForState(
 		tenCapIv: tenCap.iv,
 		tenCapYield: ownerEarningsYield(tenCap.ownerEarnings, n("shares"), price),
 		tenCapMos: marginOfSafety(tenCap.iv, price),
+		ddmIv,
+		ddmMos: marginOfSafety(ddmIv, price),
+		paybackYears: calcPaybackTime({
+			fcf: dcfInputs.fcf,
+			growth1to5: dcfInputs.growth1to5,
+			growth6to10: dcfInputs.growth6to10,
+			terminalGrowth: dcfInputs.terminalGrowth,
+			mktCap: mktCap.raw,
+			netDebt: dcfInputs.netDebt,
+		}),
 	};
 }
