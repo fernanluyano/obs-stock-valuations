@@ -60,3 +60,21 @@ const SCENARIO_VALIDATORS: ScenarioValidator[] = [scenarioOrderingRule];
 export function validateScenarios(scenarios: Record<ScenarioKey, Scenario>): string[] {
 	return SCENARIO_VALIDATORS.flatMap((rule) => rule(scenarios));
 }
+
+// The other two scenarios' values for one field, bull → base → bear order
+// with the active scenario left out — shown beside the input so the
+// reference numbers are visible without switching tabs. A blank or
+// whitespace-only value comes back as null (rendered as a dash).
+export function otherScenarioValues(
+	scenarios: Record<ScenarioKey, Scenario>,
+	key: keyof FormState,
+	active: ScenarioKey
+): { scenario: ScenarioKey; value: string | null }[] {
+	const order: ScenarioKey[] = ["bull", "base", "bear"];
+	return order
+		.filter((s) => s !== active)
+		.map((s) => {
+			const value = scenarios[s].state[key].trim();
+			return { scenario: s, value: value === "" ? null : value };
+		});
+}

@@ -51,6 +51,17 @@ import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
 import type { MacroRow } from "./macro";
+import {
+	capeStatus,
+	oilStatus,
+	spreadStatus,
+	tenYearStatus,
+	trendStatus,
+	vixStatus,
+	YIELD_MATURITIES,
+	type MarketSnapshot,
+	type Status,
+} from "./marketData";
 import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundamentalsProvider";
 import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, formatYears, sanitizeNumericInput } from "./format";
@@ -60,7 +71,7 @@ import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEnt
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS, VALUATION_HISTORY_DOC } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
-import { validateScenarios } from "./scenarioValidation";
+import { otherScenarioValues, validateScenarios } from "./scenarioValidation";
 import { ensureFolderExists } from "./noteSync";
 
 Chart.register(
@@ -1951,7 +1962,7 @@ export class StockValuationsView extends ItemView {
 
 		const body = root.createDiv({ cls: "sv-macro-body" });
 		if (rows && rows.length > 0) {
-			this.renderMacroContent(body, rows);
+			this.renderMacroContent(body, rows, this.plugin.data.getCachedMarketData());
 		} else {
 			body.createEl("p", { cls: "sv-empty-state", text: "Loading macro data…" });
 		}
@@ -1966,7 +1977,10 @@ export class StockValuationsView extends ItemView {
 		if (this.macroRefreshInFlight) return;
 		this.macroRefreshInFlight = true;
 		try {
-			const rows = await this.plugin.data.refreshMacroData();
+			const [rows] = await Promise.all([
+				this.plugin.data.refreshMacroData(),
+				this.plugin.data.refreshMarketData(),
+			]);
 			if (!rows || rows.length === 0) {
 				new Notice("Couldn't load macro data — check your connection and try again.");
 			}
@@ -1998,22 +2012,114 @@ export class StockValuationsView extends ItemView {
 		});
 	}
 
-	private renderMacroContent(body: HTMLElement, rows: MacroRow[]): void {
+	private renderMacroContent(body: HTMLElement, rows: MacroRow[], market: MarketSnapshot | null): void {
 		const sorted = [...rows].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
 		const latest = sorted[sorted.length - 1];
 
-		const stats = body.createDiv({ cls: "sv-macro-stats" });
-		const stat = (label: string, value: string, helpKey: string) => {
-			const cell = stats.createDiv({ cls: "sv-macro-stat" });
-			const labelGroup = cell.createDiv({ cls: "sv-field-label-group" });
-			labelGroup.createDiv({ cls: "sv-macro-stat-label", text: label });
-			this.appendHelpBtn(labelGroup, helpKey);
-			cell.createDiv({ cls: "sv-macro-stat-value", text: value });
+		// Cards with a colored top edge and a status pill, in the style of the
+		// trading dashboard's market cards. Cards without a `status` (TR-CAPE,
+		// dividend yield) have no agreed cut points and stay neutral.
+		const cards = body.createDiv({ cls: "sv-macro-cards" });
+		const card = (c: {
+			label: string;
+			value: string;
+			helpKey: string;
+			statusLabel: string;
+			status?: Status;
+			context?: string;
+		}) => {
+			const el = cards.createDiv({ cls: `sv-macro-card${c.status ? ` sv-tier-${c.status.tier}` : ""}` });
+			const labelGroup = el.createDiv({ cls: "sv-field-label-group" });
+			labelGroup.createDiv({ cls: "sv-macro-stat-label", text: c.label });
+			this.appendHelpBtn(labelGroup, c.helpKey);
+			el.createDiv({ cls: "sv-macro-stat-value", text: c.value });
+			if (c.context) el.createDiv({ cls: "sv-macro-card-context", text: c.context });
+			if (c.status) {
+				const row = el.createDiv({ cls: "sv-macro-card-row" });
+				row.createSpan({ text: c.statusLabel });
+				row.createSpan({ cls: "sv-macro-card-status", text: c.status.label });
+			}
 		};
-		stat("CAPE", latest.cape !== null ? latest.cape.toFixed(2) : "—", "cape");
-		stat("TR-CAPE", latest.trCape !== null ? latest.trCape.toFixed(2) : "—", "trCape");
-		stat("Dividend yield", latest.dividendYield !== null ? formatPercent(latest.dividendYield * 100) : "—", "dividendYield");
-		stat("10y Treasury yield", latest.tenYearYield !== null ? formatPercent(latest.tenYearYield) : "—", "tenYearYield");
+		const asOf = `as of ${window.moment(latest.month).format("MMM YYYY")}`;
+		card({
+			label: "CAPE",
+			value: latest.cape !== null ? latest.cape.toFixed(2) : "—",
+			helpKey: "cape",
+			statusLabel: "Shiller P/E",
+			status: latest.cape !== null ? capeStatus(latest.cape) : undefined,
+			context: asOf,
+		});
+		card({
+			label: "TR-CAPE",
+			value: latest.trCape !== null ? latest.trCape.toFixed(2) : "—",
+			helpKey: "trCape",
+			statusLabel: "",
+			context: asOf,
+		});
+		card({
+			label: "Dividend yield",
+			value: latest.dividendYield !== null ? formatPercent(latest.dividendYield * 100) : "—",
+			helpKey: "dividendYield",
+			statusLabel: "",
+			context: asOf,
+		});
+		if (market) {
+			const ten = market.yields["10Y"].latest;
+			const three = market.yields["3M"].latest;
+			card({
+				label: "10y Treasury yield",
+				value: ten !== null ? formatPercent(ten) : "—",
+				helpKey: "tenYearYield",
+				statusLabel: "Yield",
+				status: ten !== null ? tenYearStatus(ten) : undefined,
+			});
+			const spread = ten !== null && three !== null ? ten - three : null;
+			card({
+				label: "10y − 3M spread",
+				value: spread !== null ? `${spread >= 0 ? "+" : ""}${spread.toFixed(2)} pp` : "—",
+				helpKey: "yieldSpread",
+				statusLabel: "Curve",
+				status: spread !== null ? spreadStatus(spread) : undefined,
+			});
+
+			// "▲ +1.2% vs. 5 days ago" under the price, like the trading cards'
+			// week-ago line.
+			const weekContext = (chg: number | null) =>
+				chg === null ? undefined : `${chg >= 0 ? "▲" : "▼"} ${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% vs. 5 days ago`;
+			const q = market.quotes;
+			card({
+				label: "VIX",
+				value: q.vix.price !== null ? q.vix.price.toFixed(2) : "—",
+				helpKey: "vix",
+				statusLabel: "Fear gauge",
+				status: q.vix.price !== null ? vixStatus(q.vix.price) : undefined,
+				context: weekContext(q.vix.weekChangePct),
+			});
+			card({
+				label: "Gold",
+				value: q.gold.price !== null ? formatCurrency(q.gold.price) : "—",
+				helpKey: "gold",
+				statusLabel: "5-day trend",
+				status: q.gold.weekChangePct !== null ? trendStatus(q.gold.weekChangePct) : undefined,
+				context: weekContext(q.gold.weekChangePct),
+			});
+			card({
+				label: "Silver",
+				value: q.silver.price !== null ? formatCurrency(q.silver.price) : "—",
+				helpKey: "silver",
+				statusLabel: "5-day trend",
+				status: q.silver.weekChangePct !== null ? trendStatus(q.silver.weekChangePct) : undefined,
+				context: weekContext(q.silver.weekChangePct),
+			});
+			card({
+				label: "Crude oil",
+				value: q.oil.price !== null ? formatCurrency(q.oil.price) : "—",
+				helpKey: "oil",
+				statusLabel: "Per barrel",
+				status: q.oil.price !== null ? oilStatus(q.oil.price) : undefined,
+				context: weekContext(q.oil.weekChangePct),
+			});
+		}
 
 		const monthToMs = (month: string) => window.moment(month, "YYYY-MM-DD").valueOf();
 		const { mutedColor, borderColor } = this.chartThemeColors(body);
@@ -2033,26 +2139,27 @@ export class StockValuationsView extends ItemView {
 		// stays visually consistent with the rest of the plugin.
 		const capeCol = row.createDiv({ cls: "sv-chart-col" });
 		capeCol.createEl("h3", { text: "CAPE over time" });
+		const rowPoints = (source: MacroRow[], field: "cape" | "trCape" | "sp500" | "realPrice") =>
+			source
+				.filter((r) => r[field] !== null)
+				.map((r) => ({ x: monthToMs(r.month), y: r[field] as number }));
 		this.renderMacroLineChart(
 			capeCol,
-			sorted,
 			[
-				{ label: "CAPE", field: "cape", color: "#4c8bf5" },
-				{ label: "TR-CAPE", field: "trCape", color: "#f2a541" },
+				{ label: "CAPE", points: rowPoints(sorted, "cape"), color: "#4c8bf5" },
+				{ label: "TR-CAPE", points: rowPoints(sorted, "trCape"), color: "#f2a541" },
 			],
 			(v) => v.toFixed(1),
 			{ firstAt, lastAt, xTickValues, mutedColor, borderColor }
 		);
 
-		const yieldCol = row.createDiv({ cls: "sv-chart-col" });
-		yieldCol.createEl("h3", { text: "10y Treasury yield over time" });
-		this.renderMacroLineChart(
-			yieldCol,
-			sorted,
-			[{ label: "10y yield", field: "tenYearYield", color: "#8d6fd1" }],
-			(v) => formatPercent(v, 1),
-			{ firstAt, lastAt, xTickValues, mutedColor, borderColor }
-		);
+		if (market) {
+			const curveCol = row.createDiv({ cls: "sv-chart-col" });
+			const curveHeading = curveCol.createDiv({ cls: "sv-field-label-group" });
+			curveHeading.createEl("h3", { text: "Treasury yield curve" });
+			this.appendHelpBtn(curveHeading, "yieldCurve");
+			this.renderYieldCurveChart(curveCol, market, mutedColor, borderColor);
+		}
 
 		// Nominal vs. inflation-adjusted price — the gap between the two lines
 		// is exactly what "real" means: how much of the nominal index's rise is
@@ -2073,7 +2180,9 @@ export class StockValuationsView extends ItemView {
 				  );
 
 		const sp500Row = body.createDiv({ cls: "sv-chart-row" });
-		const sp500Col = sp500Row.createDiv({ cls: "sv-chart-col sv-chart-col-half" });
+		// Shares the row with the spread chart when market data is present;
+		// otherwise it stays at half width on its own.
+		const sp500Col = sp500Row.createDiv({ cls: market ? "sv-chart-col" : "sv-chart-col sv-chart-col-half" });
 		const sp500Heading = sp500Col.createDiv({ cls: "sv-field-label-group" });
 		sp500Heading.createEl("h3", { text: "S&P 500: nominal vs. inflation-adjusted (10y)" });
 		this.appendHelpBtn(sp500Heading, "realPrice");
@@ -2083,22 +2192,120 @@ export class StockValuationsView extends ItemView {
 		});
 		this.renderMacroLineChart(
 			sp500Col,
-			last10y,
 			[
-				{ label: "S&P 500 (nominal)", field: "sp500", color: "#4c8bf5" },
-				{ label: "S&P 500 (real)", field: "realPrice", color: "#f2a541" },
+				{ label: "S&P 500 (nominal)", points: rowPoints(last10y, "sp500"), color: "#4c8bf5" },
+				{ label: "S&P 500 (real)", points: rowPoints(last10y, "realPrice"), color: "#f2a541" },
 			],
 			(v) => v.toLocaleString(undefined, { maximumFractionDigits: 0 }),
 			{ firstAt: sp500FirstAt, lastAt, xTickValues: sp500XTickValues, mutedColor, borderColor }
 		);
+
+		if (market && market.spread.length > 1) {
+			const spreadCol = sp500Row.createDiv({ cls: "sv-chart-col" });
+			const spreadHeading = spreadCol.createDiv({ cls: "sv-field-label-group" });
+			spreadHeading.createEl("h3", { text: "10y − 3M spread (10y)" });
+			this.appendHelpBtn(spreadHeading, "yieldSpread");
+			spreadCol.createEl("p", {
+				cls: "sv-chart-caption",
+				text: "Below the dashed zero line the curve is inverted.",
+			});
+			const spreadPoints = market.spread.map((p) => ({ x: p.t, y: p.v }));
+			const spreadFirstAt = spreadPoints[0].x;
+			const spreadLastAt = spreadPoints[spreadPoints.length - 1].x;
+			this.renderMacroLineChart(
+				spreadCol,
+				[
+					{ label: "10y − 3M", points: spreadPoints, color: "#8d6fd1" },
+					{
+						label: "Zero",
+						points: [
+							{ x: spreadFirstAt, y: 0 },
+							{ x: spreadLastAt, y: 0 },
+						],
+						color: mutedColor,
+						dashed: true,
+					},
+				],
+				(v) => `${v.toFixed(1)} pp`,
+				{
+					firstAt: spreadFirstAt,
+					lastAt: spreadLastAt,
+					xTickValues: Array.from(
+						{ length: X_TICK_COUNT },
+						(_, i) => spreadFirstAt + ((spreadLastAt - spreadFirstAt) * i) / (X_TICK_COUNT - 1)
+					),
+					mutedColor,
+					borderColor,
+					tooltipDateFormat: "YYYY-MM-DD",
+				}
+			);
+		}
+	}
+
+	// Today's Treasury curve (3M → 30Y) with the same curve a year ago for
+	// comparison. A category axis, not a time axis: maturities are labels, not
+	// evenly spaced quantities.
+	private renderYieldCurveChart(col: HTMLElement, market: MarketSnapshot, mutedColor: string, borderColor: string): void {
+		const wrap = col.createDiv({ cls: "sv-chart-canvas-wrap" });
+		wrap.setCssStyles({ height: "220px" });
+		const canvas = wrap.createEl("canvas");
+
+		const line = (label: string, key: "latest" | "yearAgo", color: string, dashed: boolean) => ({
+			label,
+			data: YIELD_MATURITIES.map((m) => market.yields[m][key]),
+			borderColor: color,
+			backgroundColor: color,
+			borderWidth: 2,
+			borderDash: dashed ? [6, 4] : [],
+			pointRadius: 3,
+			tension: 0.2,
+			spanGaps: true,
+		});
+
+		const chart = new Chart(canvas, {
+			type: "line",
+			data: {
+				labels: [...YIELD_MATURITIES],
+				datasets: [line("Today", "latest", "#8d6fd1", false), line("1 year ago", "yearAgo", mutedColor, true)],
+			},
+			options: {
+				responsive: true,
+				maintainAspectRatio: false,
+				interaction: { mode: "index", intersect: false },
+				scales: {
+					x: { grid: { color: borderColor }, ticks: { color: mutedColor } },
+					y: {
+						grid: { color: borderColor },
+						ticks: { color: mutedColor, callback: (v) => formatPercent(Number(v), 1) },
+					},
+				},
+				plugins: {
+					legend: { labels: { color: mutedColor } },
+					tooltip: {
+						callbacks: {
+							label: (ctx) => `${ctx.dataset.label}: ${formatPercent(Number(ctx.parsed.y))}`,
+						},
+					},
+				},
+			},
+		});
+		this.charts.push(chart);
 	}
 
 	private renderMacroLineChart(
 		col: HTMLElement,
-		sorted: MacroRow[],
-		series: { label: string; field: "cape" | "trCape" | "tenYearYield" | "sp500" | "realPrice"; color: string }[],
+		// `dashed` marks a reference line (e.g. the spread chart's zero line):
+		// drawn dashed and left out of the legend and tooltip.
+		series: { label: string; points: { x: number; y: number }[]; color: string; dashed?: boolean }[],
 		formatY: (v: number) => string,
-		axis: { firstAt: number; lastAt: number; xTickValues: number[]; mutedColor: string; borderColor: string }
+		axis: {
+			firstAt: number;
+			lastAt: number;
+			xTickValues: number[];
+			mutedColor: string;
+			borderColor: string;
+			tooltipDateFormat?: string;
+		}
 	): void {
 		const wrap = col.createDiv({ cls: "sv-chart-canvas-wrap" });
 		wrap.setCssStyles({ height: "220px" });
@@ -2109,12 +2316,11 @@ export class StockValuationsView extends ItemView {
 			data: {
 				datasets: series.map((s) => ({
 					label: s.label,
-					data: sorted
-						.filter((r) => r[s.field] !== null)
-						.map((r) => ({ x: window.moment(r.month, "YYYY-MM-DD").valueOf(), y: r[s.field] as number })),
+					data: s.points,
 					borderColor: s.color,
 					backgroundColor: s.color,
-					borderWidth: 2,
+					borderWidth: s.dashed ? 1 : 2,
+					borderDash: s.dashed ? [6, 4] : [],
 					pointRadius: 0,
 					tension: 0.2,
 				})),
@@ -2146,12 +2352,17 @@ export class StockValuationsView extends ItemView {
 				},
 				plugins: {
 					legend: {
-						display: series.length > 1,
-						labels: { color: axis.mutedColor },
+						display: series.filter((s) => !s.dashed).length > 1,
+						labels: {
+							color: axis.mutedColor,
+							filter: (item) => !series[item.datasetIndex ?? 0]?.dashed,
+						},
 					},
 					tooltip: {
+						filter: (item) => !series[item.datasetIndex]?.dashed,
 						callbacks: {
-							title: (items) => (items[0] ? window.moment(items[0].parsed.x).format("YYYY-MM") : ""),
+							title: (items) =>
+								items[0] ? window.moment(items[0].parsed.x).format(axis.tooltipDateFormat ?? "YYYY-MM") : "",
 							label: (ctx) => `${ctx.dataset.label}: ${formatY(Number(ctx.parsed.y))}`,
 						},
 					},
@@ -2546,6 +2757,18 @@ export class StockValuationsView extends ItemView {
 				hint.setText(SCALE_LABELS[this.moneyScale]);
 			} else {
 				hint.setText(SCALE_LABELS[this.sharesScale]);
+			}
+		}
+
+		// The other two cases' values for this assumption, so there's no need to
+		// switch tabs to compare while editing. Static per tab: only the active
+		// scenario's field can change here, and switching tabs re-renders.
+		if (SCENARIO_SPECIFIC_FIELDS.has(key)) {
+			const ref = wrap.createDiv({ cls: "sv-scenario-ref" });
+			for (const { scenario, value } of otherScenarioValues(this.scenarios, key, this.activeScenario)) {
+				const item = ref.createSpan({ cls: "sv-scenario-ref-item" });
+				item.createSpan({ cls: `sv-scenario-ref-name sv-scenario-ref-${scenario}`, text: SCENARIO_LABELS[scenario] });
+				item.createSpan({ text: value === null ? " —" : ` ${value}%` });
 			}
 		}
 

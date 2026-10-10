@@ -1611,6 +1611,29 @@ body.tabulator-print-fullscreen-hide > *:not(.tabulator-print-fullscreen) {
 	font-weight: 600;
 }
 
+/* Reference line under a scenario-specific field's label: the other two
+   cases' values, so they can be read while editing this one. */
+
+.sv-scenario-ref {
+	display: flex;
+	gap: var(--size-4-3);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.sv-scenario-ref-name {
+	font-weight: 600;
+}
+
+.sv-scenario-ref-bull {
+	color: var(--sv-pos);
+}
+
+.sv-scenario-ref-bear {
+	color: var(--sv-neg);
+}
+
 .sv-field-editable-scenario input {
 	border-bottom-width: 2px;
 }
@@ -2041,6 +2064,56 @@ td.sv-num {
 	flex-wrap: wrap;
 	gap: var(--size-4-8);
 	margin-bottom: var(--size-4-2);
+}
+
+/* Macro cards — colored top edge + status pill, tier from marketData.ts. */
+
+.sv-macro-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+	gap: var(--size-4-4);
+	margin-bottom: var(--size-4-2);
+}
+
+.sv-macro-card {
+	--sv-tier: var(--background-modifier-border);
+	padding: var(--size-4-3) var(--size-4-4);
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-top: 3px solid var(--sv-tier);
+	border-radius: var(--radius-m);
+}
+
+.sv-macro-card.sv-tier-green {
+	--sv-tier: var(--sv-pos);
+}
+
+.sv-macro-card.sv-tier-yellow {
+	--sv-tier: var(--sv-warn);
+}
+
+.sv-macro-card.sv-tier-red {
+	--sv-tier: var(--sv-neg);
+}
+
+.sv-macro-card-context {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.sv-macro-card-row {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-2);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.sv-macro-card-status {
+	font-family: var(--sv-mono);
+	font-weight: 600;
+	color: var(--sv-tier);
 }
 
 .sv-macro-stat-label {

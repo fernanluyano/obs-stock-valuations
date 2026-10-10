@@ -8,6 +8,17 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "1.1.0",
+		highlights: [
+			"🃏 The Macro screen's numbers are now cards with a colored top edge and a status pill (CHEAP / FAIR / EXPENSIVE, LOW / ELEVATED / HIGH, NORMAL / FLAT / INVERTED, and so on) instead of plain figures. Each card's \"?\" help spells out its color cut points. TR-CAPE and dividend yield stay uncolored — there are no agreed cut points for them",
+			"📉 New Treasury yield curve chart: today's curve across 3-month, 5-year, 10-year, and 30-year maturities, with the same curve from a year ago as a dashed line. Normally it slopes up; if the left side sits above the right, the curve is inverted",
+			"📏 New 10y − 3M spread — a card plus a 10-year chart with a dashed zero line. Below zero the curve is inverted, which has preceded most US recessions",
+			"🛢️ New VIX, gold, silver, and crude oil cards, each with its move over the last 5 trading days. VIX and oil are colored by level; gold and silver by how fast they've moved over those 5 days",
+			"🔁 The 10-year Treasury yield on the Macro screen now comes live from Yahoo Finance (^TNX), the same source as the risk-free rate, instead of Shiller's monthly figure. The old \"10y yield over time\" chart is gone, replaced by the yield curve and spread charts. Everything from Yahoo is cached for 24 hours",
+			"👀 On the Bull, Base, and Bear tabs, each growth assumption (FCF growth yrs 1-5 and 6-10, terminal growth, EPS growth, dividend growth) now shows the other two cases' values right under its label, so you can compare while editing without switching tabs",
+		],
+	},
+	{
 		version: "1.0.0",
 		highlights: [
 			"🎉 1.0 — the plugin's been tested enough to call it stable",

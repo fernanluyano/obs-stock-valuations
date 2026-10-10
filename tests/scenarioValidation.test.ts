@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateScenarios } from "../scenarioValidation";
+import { otherScenarioValues, validateScenarios } from "../scenarioValidation";
 import type { FormState, Results, Scenario, ScenarioKey } from "../valuationStore";
 
 // Minimal fixture — validateScenarios only reads the four growth fields, so
@@ -146,5 +146,46 @@ describe("validateScenarios", () => {
 			bull: { growth1to5: "5" },
 		});
 		expect(validateScenarios(scenarios)).toEqual([]);
+	});
+});
+
+describe("otherScenarioValues", () => {
+	it("returns the two non-active scenarios in bull, base, bear order", () => {
+		const scenarios = fixtureScenarios();
+
+		expect(otherScenarioValues(scenarios, "growth1to5", "base")).toEqual([
+			{ scenario: "bull", value: "15" },
+			{ scenario: "bear", value: "2" },
+		]);
+		expect(otherScenarioValues(scenarios, "growth1to5", "bull")).toEqual([
+			{ scenario: "base", value: "8" },
+			{ scenario: "bear", value: "2" },
+		]);
+		expect(otherScenarioValues(scenarios, "growth1to5", "bear")).toEqual([
+			{ scenario: "bull", value: "15" },
+			{ scenario: "base", value: "8" },
+		]);
+	});
+
+	it("reads the requested field, not a fixed one", () => {
+		expect(otherScenarioValues(fixtureScenarios(), "terminalGrowth", "base")).toEqual([
+			{ scenario: "bull", value: "3" },
+			{ scenario: "bear", value: "1" },
+		]);
+	});
+
+	it("returns null for a blank or whitespace-only value", () => {
+		const scenarios = fixtureScenarios({ bull: { ddmGrowth: "" }, bear: { ddmGrowth: "  " } });
+
+		expect(otherScenarioValues(scenarios, "ddmGrowth", "base")).toEqual([
+			{ scenario: "bull", value: null },
+			{ scenario: "bear", value: null },
+		]);
+	});
+
+	it("trims surrounding whitespace on a real value", () => {
+		const scenarios = fixtureScenarios({ bull: { growth1to5: " 12 " } });
+
+		expect(otherScenarioValues(scenarios, "growth1to5", "base")[0]).toEqual({ scenario: "bull", value: "12" });
 	});
 });

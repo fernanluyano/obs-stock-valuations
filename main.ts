@@ -5,7 +5,7 @@ import { syncHistoryNote } from "./noteSync";
 import { historyNotePath } from "./noteContent";
 import { DataRepository } from "./dataRepository";
 import { fetchRiskFreeRate } from "./priceProvider";
-import { fetchMacroData } from "./macro";
+import { fetchMacroData, fetchMarketData } from "./macro";
 
 export default class StockValuationsPlugin extends Plugin {
 	data!: DataRepository;
@@ -26,7 +26,8 @@ export default class StockValuationsPlugin extends Plugin {
 					10000
 				),
 			fetchRiskFreeRate,
-			fetchMacroData
+			fetchMacroData,
+			fetchMarketData
 		);
 		await this.data.load();
 

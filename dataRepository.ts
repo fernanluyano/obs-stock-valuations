@@ -3,6 +3,7 @@ import { CURRENT_SCHEMA_VERSION, LegacySavedValuation, migrateValuationsToV2 } f
 import type { SavedValuation, ValuationTable } from "./valuationStore";
 import { computeResultsForState } from "./valuationCalc";
 import type { MacroRow } from "./macro";
+import type { MarketSnapshot } from "./marketData";
 
 // ^TNX is an end-of-day index snapshot, not a tick-by-tick quote — it only
 // moves once per trading day, so refetching more often than this buys
@@ -29,6 +30,16 @@ interface MacroCache {
 	fetchedAt: number;
 }
 
+// Yahoo quotes (yield curve, VIX, commodities) move intraday, but the Macro
+// screen is a big-picture view — a day keeps API calls rare, same as the RFR
+// and Shiller caches.
+const MARKET_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface MarketCache {
+	snapshot: MarketSnapshot;
+	fetchedAt: number;
+}
+
 // Everything persisted to Obsidian's plugin data.json in one blob — settings
 // and valuations share a single load/save round trip, not two independent
 // stores.
@@ -39,6 +50,7 @@ export interface PluginData {
 	lastSeenVersion?: string;
 	rfrCache?: RfrCache;
 	macroCache?: MacroCache;
+	marketCache?: MarketCache;
 }
 
 // The slice of Obsidian's Plugin API this repository needs. Duck-typed
@@ -75,6 +87,10 @@ export type FetchRfrFn = () => Promise<number | null>;
 // level).
 export type FetchMacroDataFn = () => Promise<MacroRow[] | null>;
 
+// Fetches the Yahoo-sourced market snapshot (Treasury curve, VIX, gold,
+// silver, oil), or null on total failure. Injected for the same reason.
+export type FetchMarketDataFn = () => Promise<MarketSnapshot | null>;
+
 // Owns every read/write of the plugin's persisted state: settings and the
 // per-ticker valuation table. main.ts wires this to the real Obsidian plugin
 // (which already implements PluginDataAdapter) and the vault note sync;
@@ -87,6 +103,7 @@ export class DataRepository {
 	private schemaVersion: number = CURRENT_SCHEMA_VERSION;
 	private rfrCache: RfrCache | undefined;
 	private macroCache: MacroCache | undefined;
+	private marketCache: MarketCache | undefined;
 
 	constructor(
 		private readonly adapter: PluginDataAdapter,
@@ -94,7 +111,8 @@ export class DataRepository {
 		private readonly syncNote: NoteSyncFn,
 		private readonly onNoteSyncError: (error: unknown, ticker: string) => void = () => {},
 		private readonly fetchRfr: FetchRfrFn = () => Promise.resolve(null),
-		private readonly fetchMacro: FetchMacroDataFn = () => Promise.resolve(null)
+		private readonly fetchMacro: FetchMacroDataFn = () => Promise.resolve(null),
+		private readonly fetchMarket: FetchMarketDataFn = () => Promise.resolve(null)
 	) {
 		this.settings = defaultSettings;
 	}
@@ -120,6 +138,9 @@ export class DataRepository {
 		this.lastSeenVersion = data.lastSeenVersion;
 		this.rfrCache = data.rfrCache;
 		this.macroCache = data.macroCache;
+		// A cache from before the snapshot grew `quotes` (price + 5-day change
+		// per symbol) is dropped rather than migrated — it's refetched anyway.
+		this.marketCache = data.marketCache?.snapshot?.quotes ? data.marketCache : undefined;
 
 		// Missing schemaVersion means the old single-scenario shape. Fast path
 		// (already migrated) is a single number comparison — no loop, no
@@ -229,6 +250,28 @@ export class DataRepository {
 		return this.getCachedMacroData();
 	}
 
+	// Last fetched/cached market snapshot, without triggering a fetch — null
+	// until the first successful fetch ever lands.
+	getCachedMarketData(): MarketSnapshot | null {
+		return this.marketCache?.snapshot ?? null;
+	}
+
+	// Returns the cached Yahoo market snapshot, refetching only if the cache is
+	// missing/stale. A failed fetch falls back to whatever's already cached
+	// (or null), and persists the cache on disk whenever it changes.
+	async refreshMarketData(): Promise<MarketSnapshot | null> {
+		const now = Date.now();
+		if (this.marketCache && now - this.marketCache.fetchedAt < MARKET_CACHE_TTL_MS) {
+			return this.marketCache.snapshot;
+		}
+		const snapshot = await this.fetchMarket();
+		if (snapshot !== null) {
+			this.marketCache = { snapshot, fetchedAt: now };
+			await this.writeToDisk();
+		}
+		return this.getCachedMarketData();
+	}
+
 	getValuation(ticker: string): SavedValuation | undefined {
 		return this.valuations[ticker];
 	}
@@ -294,6 +337,7 @@ export class DataRepository {
 			lastSeenVersion: this.lastSeenVersion,
 			rfrCache: this.rfrCache,
 			macroCache: this.macroCache,
+			marketCache: this.marketCache,
 		};
 		await this.adapter.saveData(data);
 	}

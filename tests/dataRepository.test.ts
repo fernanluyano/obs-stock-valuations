@@ -448,7 +448,7 @@ describe("DataRepository.saveSettings", () => {
 });
 
 describe("DataRepository macro data caching", () => {
-	const macroRows = [{ month: "2026-09-01", cape: 40, trCape: 43, dividendYield: 0.01, tenYearYield: 4.6, sp500: 7600, realPrice: 7600 }];
+	const macroRows = [{ month: "2026-09-01", cape: 40, trCape: 43, dividendYield: 0.01, sp500: 7600, realPrice: 7600 }];
 
 	async function loadedRepo(fetchMacro = vi.fn().mockResolvedValue(macroRows)) {
 		const adapter = fakeAdapter({ settings: {}, valuations: {}, schemaVersion: 2 });
@@ -526,6 +526,120 @@ describe("DataRepository macro data caching", () => {
 
 		expect(rows).toBeNull();
 		expect(repo.getCachedMacroData()).toBeNull();
+	});
+});
+
+describe("DataRepository market data caching", () => {
+	const reading = (latest: number) => ({ latest, yearAgo: null });
+	const snapshot = {
+		yields: { "3M": reading(4), "5Y": reading(5), "10Y": reading(5.2), "30Y": reading(5.6) },
+		spread: [{ t: 1_700_000_000_000, v: 1.2 }],
+		quotes: {
+			vix: { price: 18, weekChangePct: 2 },
+			gold: { price: 2000, weekChangePct: 0.5 },
+			silver: { price: 25, weekChangePct: -1 },
+			oil: { price: 80, weekChangePct: 3 },
+		},
+	};
+
+	async function loadedRepo(fetchMarket = vi.fn().mockResolvedValue(snapshot), initial: object = {}) {
+		const adapter = fakeAdapter({ settings: {}, valuations: {}, schemaVersion: 2, ...initial });
+		const repo = new DataRepository(
+			adapter,
+			fixtureSettings(),
+			vi.fn().mockResolvedValue(undefined),
+			() => {},
+			() => Promise.resolve(null),
+			() => Promise.resolve(null),
+			fetchMarket
+		);
+		await repo.load();
+		return { adapter, repo, fetchMarket };
+	}
+
+	it("getCachedMarketData is null until a fetch has ever succeeded", async () => {
+		const { repo } = await loadedRepo();
+		expect(repo.getCachedMarketData()).toBeNull();
+	});
+
+	it("refreshMarketData fetches, caches, and persists on first call", async () => {
+		const { adapter, repo, fetchMarket } = await loadedRepo();
+
+		const result = await repo.refreshMarketData();
+
+		expect(result).toEqual(snapshot);
+		expect(fetchMarket).toHaveBeenCalledTimes(1);
+		expect(repo.getCachedMarketData()).toEqual(snapshot);
+		expect(adapter.current).toMatchObject({ marketCache: { snapshot } });
+	});
+
+	it("does not refetch within the 24h TTL", async () => {
+		const { repo, fetchMarket } = await loadedRepo();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+		await repo.refreshMarketData();
+		now.mockReturnValue(1_700_000_000_000 + 23 * 60 * 60 * 1000); // 23h later
+		await repo.refreshMarketData();
+
+		expect(fetchMarket).toHaveBeenCalledTimes(1);
+		now.mockRestore();
+	});
+
+	it("refetches once the TTL has elapsed", async () => {
+		const { repo, fetchMarket } = await loadedRepo();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+		await repo.refreshMarketData();
+		now.mockReturnValue(1_700_000_000_000 + 25 * 60 * 60 * 1000); // 25h later
+		await repo.refreshMarketData();
+
+		expect(fetchMarket).toHaveBeenCalledTimes(2);
+		now.mockRestore();
+	});
+
+	it("a failed fetch falls back to whatever's already cached, without clearing it", async () => {
+		const fetchMarket = vi.fn().mockResolvedValueOnce(snapshot).mockResolvedValueOnce(null);
+		const { repo } = await loadedRepo(fetchMarket);
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+
+		await repo.refreshMarketData();
+		now.mockReturnValue(1_700_000_000_000 + 25 * 60 * 60 * 1000); // past the TTL, forces a refetch
+		const result = await repo.refreshMarketData();
+
+		expect(result).toEqual(snapshot);
+		expect(repo.getCachedMarketData()).toEqual(snapshot);
+		now.mockRestore();
+	});
+
+	it("a failed fetch with nothing ever cached returns null", async () => {
+		const { repo } = await loadedRepo(vi.fn().mockResolvedValue(null));
+
+		expect(await repo.refreshMarketData()).toBeNull();
+		expect(repo.getCachedMarketData()).toBeNull();
+	});
+
+	it("drops a persisted cache from before snapshots had quotes, and refetches", async () => {
+		const { repo, fetchMarket } = await loadedRepo(undefined, {
+			marketCache: { snapshot: { yields: {}, spread: [], vix: 18 }, fetchedAt: Date.now() },
+		});
+
+		expect(repo.getCachedMarketData()).toBeNull();
+		await repo.refreshMarketData();
+
+		expect(fetchMarket).toHaveBeenCalledTimes(1);
+	});
+
+	it("loads a previously persisted cache and serves it without fetching", async () => {
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+		const { repo, fetchMarket } = await loadedRepo(undefined, {
+			marketCache: { snapshot, fetchedAt: 1_700_000_000_000 - 10 * 60 * 1000 },
+		});
+
+		expect(repo.getCachedMarketData()).toEqual(snapshot);
+		await repo.refreshMarketData();
+
+		expect(fetchMarket).not.toHaveBeenCalled();
+		now.mockRestore();
 	});
 });
 
