@@ -1,6 +1,11 @@
 import type { StockValuationsSettings } from "./settings";
 import { CURRENT_SCHEMA_VERSION, LegacySavedValuation, migrateValuationsToV2 } from "./migrations";
 import type { SavedValuation, ValuationTable } from "./valuationStore";
+import type { VaultPort } from "./storage/VaultPort";
+import { kindOf, stateOf } from "./notes/kinds";
+import { normalizeFolder, settingsNotePath, valuationNotePath } from "./notes/paths";
+import { buildValuationNote, parseValuationNote, patchValuationNote } from "./notes/valuationNote";
+import { buildSettingsNote, parseSettingsProps, patchSettingsNote, type PortableSettings } from "./notes/settingsNote";
 import { computeResultsForState } from "./valuationCalc";
 import type { MacroRow } from "./macro";
 import type { MarketSnapshot } from "./marketData";
@@ -51,18 +56,25 @@ interface MarketCache {
 	fetchedAt: number;
 }
 
-// Everything persisted to Obsidian's plugin data.json in one blob — settings
-// and valuations share a single load/save round trip, not two independent
-// stores.
+// What Obsidian's plugin data.json holds now: device-local state only. The
+// valuations and settings live in vault notes (see notes/); losing this file
+// costs a refetch of the caches, never any user data. notesFolder is where
+// those notes are — it can't live in a note, since it's how the notes are found.
 export interface PluginData {
-	settings: StockValuationsSettings;
-	valuations: ValuationTable;
-	schemaVersion?: number;
+	notesFolder?: string;
 	lastSeenVersion?: string;
 	rfrCache?: RfrCache;
 	aaaCache?: AaaCache;
 	macroCache?: MacroCache;
 	marketCache?: MarketCache;
+}
+
+// The pre-2.0 keys of data.json, when valuations and settings lived there.
+// Read once to import them into notes, then dropped from the file.
+interface LegacyData {
+	settings?: Partial<StockValuationsSettings> & { valuationsNotePath?: unknown };
+	valuations?: Record<string, LegacySavedValuation> | ValuationTable;
+	schemaVersion?: number;
 }
 
 // The slice of Obsidian's Plugin API this repository needs. Duck-typed
@@ -74,11 +86,6 @@ export interface PluginDataAdapter {
 	loadData(): Promise<unknown>;
 	saveData(data: unknown): Promise<void>;
 }
-
-// Regenerates one ticker's vault history note (TICKER-history.md) from its
-// record. Injected instead of imported directly so DataRepository never
-// needs a real Obsidian App/Vault to be unit tested.
-export type NoteSyncFn = (ticker: string, record: SavedValuation) => Promise<void>;
 
 // Settings carry-over: the old single summary note setting
 // (valuationsNotePath, a file path) became historyNotesFolder (a folder).
@@ -107,16 +114,25 @@ export type FetchMacroDataFn = () => Promise<MacroRow[] | null>;
 // silver, oil), or null on total failure. Injected for the same reason.
 export type FetchMarketDataFn = () => Promise<MarketSnapshot | null>;
 
-// Owns every read/write of the plugin's persisted state: settings and the
-// per-ticker valuation table. main.ts wires this to the real Obsidian plugin
-// (which already implements PluginDataAdapter) and the vault note sync;
+// Owns every read/write of the plugin's persisted state. The vault notes are
+// the source of truth for settings and the per-ticker valuation table (one
+// TICKER.md per ticker plus Settings.md, in the notes folder); data.json only
+// keeps device-local state (see PluginData). main.ts wires this to the real
+// Obsidian plugin (which already implements PluginDataAdapter) and the vault;
 // view.ts and settings.ts talk to this instead of reaching into
 // plugin.valuations / plugin.settings directly.
 export class DataRepository {
 	settings: StockValuationsSettings;
 	lastSeenVersion: string | undefined;
 	private valuations: ValuationTable = {};
-	private schemaVersion: number = CURRENT_SCHEMA_VERSION;
+	// Where each loaded ticker's note actually is — properties win over paths,
+	// so a note the user moved or renamed is still written back in place.
+	private notePaths = new Map<string, string>();
+	private settingsPath: string | undefined;
+	// Legacy data.json keys, kept (and written back) only while an import into
+	// notes hasn't completed, so a failed import loses nothing and retries.
+	private legacyKeep: LegacyData | undefined;
+	private writeQueue: Promise<void> = Promise.resolve();
 	private rfrCache: RfrCache | undefined;
 	private aaaCache: AaaCache | undefined;
 	private macroCache: MacroCache | undefined;
@@ -125,8 +141,9 @@ export class DataRepository {
 	constructor(
 		private readonly adapter: PluginDataAdapter,
 		private readonly defaultSettings: StockValuationsSettings,
-		private readonly syncNote: NoteSyncFn,
-		private readonly onNoteSyncError: (error: unknown, ticker: string) => void = () => {},
+		private readonly vault: VaultPort,
+		// `subject` names what failed: a ticker, a note path, or "Settings".
+		private readonly onNoteError: (error: unknown, subject: string) => void = () => {},
 		private readonly fetchRfr: FetchRfrFn = () => Promise.resolve(null),
 		private readonly fetchMacro: FetchMacroDataFn = () => Promise.resolve(null),
 		private readonly fetchMarket: FetchMarketDataFn = () => Promise.resolve(null),
@@ -135,24 +152,17 @@ export class DataRepository {
 		this.settings = defaultSettings;
 	}
 
-	// Loads settings + valuations from disk, migrating the valuation table to
-	// the current schema if needed. Call once, before reading or writing
-	// anything else.
+	// Loads settings + valuations from the vault notes. Call once, before
+	// reading or writing anything else.
+	//
+	// The import of a pre-2.0 data.json is gated so a normal startup pays
+	// nothing for it: no legacy keys is a check on the data already in memory
+	// (no vault access at all), and only a file that still has them costs one
+	// path lookup for Settings.md — the import's completion marker. Once an
+	// import finishes, data.json is rewritten without the legacy keys, so every
+	// later start takes the free path.
 	async load(): Promise<void> {
-		const data = ((await this.adapter.loadData()) ?? {}) as Partial<PluginData> & {
-			valuations?: Record<string, LegacySavedValuation> | ValuationTable;
-		};
-		// valuationsNotePath is the retired summary-note setting — dropped from
-		// settings, but used once to seed historyNotesFolder (see folderOfPath)
-		// if that's never been set. Nothing is written back here; the old key
-		// just disappears from data.json on the next save.
-		const { valuationsNotePath, ...savedSettings } = (data.settings ?? {}) as Partial<StockValuationsSettings> & {
-			valuationsNotePath?: unknown;
-		};
-		this.settings = Object.assign({}, this.defaultSettings, savedSettings);
-		if (savedSettings.historyNotesFolder === undefined && typeof valuationsNotePath === "string") {
-			this.settings.historyNotesFolder = folderOfPath(valuationsNotePath);
-		}
+		const data = ((await this.adapter.loadData()) ?? {}) as Partial<PluginData> & LegacyData;
 		this.lastSeenVersion = data.lastSeenVersion;
 		this.rfrCache = data.rfrCache;
 		this.aaaCache = data.aaaCache;
@@ -161,27 +171,145 @@ export class DataRepository {
 		// per symbol) is dropped rather than migrated — it's refetched anyway.
 		this.marketCache = data.marketCache?.snapshot?.quotes ? data.marketCache : undefined;
 
-		// Missing schemaVersion means the old single-scenario shape. Fast path
-		// (already migrated) is a single number comparison — no loop, no
-		// per-record shape checks — so every load after the first migration
-		// stays cheap.
-		const schemaVersion = data.schemaVersion ?? 1;
-		if (schemaVersion >= CURRENT_SCHEMA_VERSION) {
-			this.valuations = (data.valuations as ValuationTable) ?? {};
-			this.schemaVersion = schemaVersion;
-			this.recomputeAllResults();
-			return;
-		}
+		const hasLegacy = data.valuations !== undefined || data.settings !== undefined;
+		const legacySettings = this.legacySettings(data);
+		const folder = normalizeFolder(data.notesFolder ?? legacySettings.historyNotesFolder);
+		this.settings = Object.assign({}, this.defaultSettings, legacySettings, { historyNotesFolder: folder });
 
-		this.valuations = migrateValuationsToV2((data.valuations as Record<string, LegacySavedValuation>) ?? {});
-		this.schemaVersion = CURRENT_SCHEMA_VERSION;
+		if (hasLegacy && !this.vault.exists(settingsNotePath(folder))) {
+			if (!(await this.importLegacy(data))) {
+				// Some notes couldn't be written (already reported): run from the
+				// legacy data this session and keep it in data.json for a retry.
+				this.legacyKeep = { settings: data.settings, valuations: data.valuations, schemaVersion: data.schemaVersion };
+				this.valuations = this.legacyValuations(data);
+				this.recomputeAllResults();
+				await this.writeCache();
+				return;
+			}
+		}
+		await this.loadFromNotes();
 		this.recomputeAllResults();
-		// Persist right away so data.json moves to the new shape immediately — a
-		// vault that's only ever viewed, never edited, still ends up migrated
-		// instead of stuck on the old shape. No history notes are written here
-		// (or anywhere in bulk) — each ticker's note is written only when that
-		// ticker is saved, refreshed, or has its history edited.
-		await this.writeToDisk();
+		// Drops the legacy keys now that the notes hold everything.
+		if (hasLegacy) await this.writeCache();
+	}
+
+	// valuationsNotePath is the retired summary-note setting — dropped, but used
+	// once to seed historyNotesFolder (see folderOfPath) if that's never been set.
+	private legacySettings(data: LegacyData): StockValuationsSettings {
+		const { valuationsNotePath, ...saved } = data.settings ?? {};
+		const settings = Object.assign({}, this.defaultSettings, saved);
+		if (saved.historyNotesFolder === undefined && typeof valuationsNotePath === "string") {
+			settings.historyNotesFolder = folderOfPath(valuationsNotePath);
+		}
+		return settings;
+	}
+
+	// Missing schemaVersion means the old single-scenario shape. Already
+	// migrated is a single number comparison — no loop, no per-record checks.
+	private legacyValuations(data: LegacyData): ValuationTable {
+		if ((data.schemaVersion ?? 1) >= CURRENT_SCHEMA_VERSION) return (data.valuations as ValuationTable) ?? {};
+		return migrateValuationsToV2((data.valuations as Record<string, LegacySavedValuation>) ?? {});
+	}
+
+	// One-time import: a note per ticker, then Settings.md last as the commit
+	// marker — a crash before it leaves the marker absent, so the next start
+	// retries. Tickers that already have a note (an earlier, interrupted
+	// attempt) are skipped; nothing existing is ever overwritten. Returns false
+	// if any note couldn't be written, in which case no marker is written.
+	private async importLegacy(data: LegacyData): Promise<boolean> {
+		const folder = this.settings.historyNotesFolder;
+		const have = new Set((await this.scanNotes()).valuations.map((n) => n.ticker));
+		let ok = true;
+		for (const [ticker, record] of Object.entries(this.legacyValuations(data))) {
+			if (have.has(ticker)) continue;
+			try {
+				const path = this.freeNotePath(ticker);
+				await this.vault.create(path, buildValuationNote(ticker, record));
+			} catch (e) {
+				ok = false;
+				console.error(`Stock Valuations: failed to import ${ticker}`, e);
+				this.onNoteError(e, ticker);
+			}
+		}
+		if (!ok) return false;
+		try {
+			await this.vault.create(settingsNotePath(folder), buildSettingsNote(this.portableSettings()));
+		} catch (e) {
+			console.error("Stock Valuations: failed to import settings", e);
+			this.onNoteError(e, "Settings");
+			return false;
+		}
+		return true;
+	}
+
+	// Reads every plugin note in the notes folder. Staged (in_transit) copies
+	// don't count; a note that can't be read is reported and skipped, never
+	// silently dropped; a ticker with two notes keeps the first by path.
+	private async scanNotes(): Promise<{
+		valuations: { ticker: string; path: string; record: SavedValuation }[];
+		settings?: { path: string; props: Record<string, unknown> };
+	}> {
+		const found = await this.vault.listNotes(this.settings.historyNotesFolder);
+		const valuations: { ticker: string; path: string; record: SavedValuation }[] = [];
+		let settings: { path: string; props: Record<string, unknown> } | undefined;
+		const seen = new Set<string>();
+		for (const { path, props } of [...found].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+			const kind = kindOf(props);
+			if (!kind || stateOf(props) !== "current") continue;
+			if (kind === "settings") {
+				settings ??= { path, props };
+				continue;
+			}
+			const parsed = parseValuationNote(props, (await this.vault.read(path)) ?? "");
+			if (!parsed.ok) {
+				this.onNoteError(new Error(parsed.reason), path);
+				continue;
+			}
+			if (seen.has(parsed.ticker)) {
+				this.onNoteError(new Error(`duplicate note for ${parsed.ticker}, ignored`), path);
+				continue;
+			}
+			seen.add(parsed.ticker);
+			if (parsed.issues.length > 0) {
+				this.onNoteError(new Error(`${parsed.issues.length} unreadable row(s): ${parsed.issues.join("; ")}`), path);
+			}
+			valuations.push({ ticker: parsed.ticker, path, record: parsed.record });
+		}
+		return { valuations, settings };
+	}
+
+	private async loadFromNotes(): Promise<void> {
+		const { valuations, settings } = await this.scanNotes();
+		this.valuations = {};
+		this.notePaths = new Map();
+		for (const { ticker, path, record } of valuations) {
+			this.valuations[ticker] = record;
+			this.notePaths.set(ticker, path);
+		}
+		this.settingsPath = settings?.path;
+		if (settings) {
+			this.settings = {
+				...this.settings,
+				...parseSettingsProps(settings.props, this.portableSettings()),
+			};
+		}
+	}
+
+	private portableSettings(): PortableSettings {
+		const { historyNotesFolder: _folder, ...portable } = this.settings;
+		return portable;
+	}
+
+	// Default path for a ticker's note, or — when something else already sits
+	// there (a user's own TICKER.md, say) — a sibling name; the ticker property,
+	// not the filename, is what identifies the note.
+	private freeNotePath(ticker: string): string {
+		const folder = this.settings.historyNotesFolder;
+		const plain = valuationNotePath(folder, ticker);
+		if (!this.vault.exists(plain)) return plain;
+		const alt = valuationNotePath(folder, `${ticker} (valuation)`);
+		if (!this.vault.exists(alt)) return alt;
+		throw new Error(`${plain} and ${alt} already exist`);
 	}
 
 	// Saved results are a cache of computeResultsForState(state), never the
@@ -209,12 +337,43 @@ export class DataRepository {
 		}
 	}
 
-	// Writes settings (and everything else in the blob, unchanged) to disk. No
-	// history notes are rewritten — they only ever reflect a ticker's history,
-	// which hasn't changed (and a changed history notes folder applies to the
-	// next write, not retroactively).
+	// Writes the portable settings to Settings.md (created on first save). No
+	// ticker note is touched. historyNotesFolder isn't part of it — use
+	// setNotesFolder for that.
 	async saveSettings(): Promise<void> {
-		await this.writeToDisk();
+		await this.enqueue(async () => {
+			try {
+				const portable = this.portableSettings();
+				const path = this.settingsPath;
+				if (path && this.vault.exists(path)) {
+					await this.vault.modify(path, (c) => patchSettingsNote(c, portable));
+				} else {
+					const created = settingsNotePath(this.settings.historyNotesFolder);
+					await this.vault.create(created, buildSettingsNote(portable));
+					this.settingsPath = created;
+				}
+			} catch (e) {
+				console.error("Stock Valuations: failed to save settings", e);
+				this.onNoteError(e, "Settings");
+			}
+		});
+	}
+
+	// Points the plugin at another notes folder and reloads from it. Nothing is
+	// moved or deleted: the old folder's notes stay where they are, and a
+	// folder with no notes simply loads empty (its Settings.md is only created
+	// by the next settings change). Valuations come from the new folder alone.
+	async setNotesFolder(folder: string): Promise<void> {
+		this.settings.historyNotesFolder = normalizeFolder(folder);
+		await this.writeCache();
+		await this.loadFromNotes();
+		this.recomputeAllResults();
+	}
+
+	// Writes only the device-local state (caches, last seen version, notes
+	// folder) — no note is touched.
+	async saveLocalState(): Promise<void> {
+		await this.writeCache();
 	}
 
 	// Last fetched/cached risk-free rate, without triggering a fetch — for
@@ -237,7 +396,7 @@ export class DataRepository {
 		const value = await this.fetchRfr();
 		if (value !== null) {
 			this.rfrCache = { value, fetchedAt: now };
-			await this.writeToDisk();
+			await this.writeCache();
 		}
 		return this.getCachedRiskFreeRate();
 	}
@@ -258,7 +417,7 @@ export class DataRepository {
 		const value = await this.fetchAaa();
 		if (value !== null) {
 			this.aaaCache = { value, fetchedAt: now };
-			await this.writeToDisk();
+			await this.writeCache();
 		}
 		return this.getCachedAaaYield();
 	}
@@ -285,7 +444,7 @@ export class DataRepository {
 		const rows = await this.fetchMacro();
 		if (rows !== null) {
 			this.macroCache = { rows, fetchedAt: now };
-			await this.writeToDisk();
+			await this.writeCache();
 		}
 		return this.getCachedMacroData();
 	}
@@ -307,7 +466,7 @@ export class DataRepository {
 		const snapshot = await this.fetchMarket();
 		if (snapshot !== null) {
 			this.marketCache = { snapshot, fetchedAt: now };
-			await this.writeToDisk();
+			await this.writeCache();
 		}
 		return this.getCachedMarketData();
 	}
@@ -327,58 +486,78 @@ export class DataRepository {
 		return Object.keys(this.valuations);
 	}
 
-	// Replaces (or creates) one ticker's record wholesale and persists — the
-	// calculator form's Save button. Rewrites only that ticker's history note.
+	// Replaces (or creates) one ticker's record wholesale and writes its note —
+	// the calculator form's Save button.
 	async saveValuation(ticker: string, record: SavedValuation): Promise<void> {
 		this.valuations[ticker] = record;
 		await this.persistValuations([ticker]);
 	}
 
-	// The ticker's history note is deliberately left in the vault — it's a
-	// record of that history, and only the plugin's own data is deleted.
+	// The note is the data, so deleting a ticker sends its note to Obsidian's
+	// trash (honouring the user's trash setting) — left in place it would come
+	// back on the next load.
 	async deleteValuation(ticker: string): Promise<void> {
 		delete this.valuations[ticker];
-		await this.persistValuations([]);
+		const path = this.notePaths.get(ticker);
+		this.notePaths.delete(ticker);
+		if (!path) return;
+		await this.enqueue(async () => {
+			try {
+				if (this.vault.exists(path)) await this.vault.trash(path);
+			} catch (e) {
+				console.error(`Stock Valuations: failed to delete ${ticker}'s note`, e);
+				this.onNoteError(e, ticker);
+			}
+		});
 	}
 
-	// Writes the current valuations table to disk, then rewrites the history
-	// note of each ticker in `changedTickers` — and only those; every other
-	// ticker's note is left alone. saveValuation()/deleteValuation() call this
-	// internally; call it directly after mutating a record obtained from
-	// getValuation() in place, naming whichever tickers' history changed:
-	// [ticker] for a history delete/compact, every refreshed ticker after a
-	// price refresh, [] for a change that doesn't touch history (research-note
-	// linking).
+	// Rewrites the note of each ticker in `changedTickers` — and only those;
+	// every other note is left alone. saveValuation() calls this internally;
+	// call it directly after mutating a record obtained from getValuation() in
+	// place, naming every ticker that changed (anything in a record lives in
+	// its note, research links included).
 	async persistValuations(changedTickers: string[]): Promise<void> {
-		await this.writeToDisk();
 		for (const ticker of changedTickers) {
 			const record = this.valuations[ticker];
-			if (record) await this.syncTickerNote(ticker, record);
+			if (record) await this.enqueue(() => this.writeNote(ticker, record));
 		}
 	}
 
-	// One note write, with failures reported (not thrown) — data.json is
-	// already saved by the time any note is written, so a note failure must
-	// never look like the save itself failed.
-	private async syncTickerNote(ticker: string, record: SavedValuation): Promise<void> {
+	// One note write, with failures reported (not thrown). A note whose
+	// history table can't be fully read is refused rather than overwritten —
+	// that error lands here too.
+	private async writeNote(ticker: string, record: SavedValuation): Promise<void> {
 		try {
-			await this.syncNote(ticker, record);
+			const path = this.notePaths.get(ticker);
+			if (path && this.vault.exists(path)) {
+				await this.vault.modify(path, (c) => patchValuationNote(c, ticker, record));
+				return;
+			}
+			const created = this.freeNotePath(ticker);
+			await this.vault.create(created, buildValuationNote(ticker, record));
+			this.notePaths.set(ticker, created);
 		} catch (e) {
-			console.error(`Stock Valuations: failed to write ${ticker}'s history note`, e);
-			this.onNoteSyncError(e, ticker);
+			console.error(`Stock Valuations: failed to write ${ticker}'s note`, e);
+			this.onNoteError(e, ticker);
 		}
 	}
 
-	private async writeToDisk(): Promise<void> {
-		const data: PluginData = {
-			settings: this.settings,
-			valuations: this.valuations,
-			schemaVersion: this.schemaVersion,
+	// Writes run one at a time, so two quick saves of a new ticker can't both
+	// try to create its note.
+	private enqueue(task: () => Promise<void>): Promise<void> {
+		this.writeQueue = this.writeQueue.then(task, task);
+		return this.writeQueue;
+	}
+
+	private async writeCache(): Promise<void> {
+		const data: PluginData & LegacyData = {
+			notesFolder: this.settings.historyNotesFolder,
 			lastSeenVersion: this.lastSeenVersion,
 			rfrCache: this.rfrCache,
 			aaaCache: this.aaaCache,
 			macroCache: this.macroCache,
 			marketCache: this.marketCache,
+			...this.legacyKeep,
 		};
 		await this.adapter.saveData(data);
 	}

@@ -12,7 +12,7 @@ function normalizeFolderPath(value: string): string {
 
 // Shared by both settings surfaces (display() and getSettingDefinitions()).
 const HISTORY_FOLDER_DESC =
-	"Vault folder for each ticker's auto-generated TICKER-history.md note — its whole valuation history, one row per saved valuation or price refresh (folders are created automatically; blank means the vault root). Only the ticker that changed is rewritten, never all of them. Don't hand-edit these notes, changes there won't stick. Changing this doesn't move notes already written — new writes just go to the new folder.";
+	"Vault folder where your valuations live: one TICKER.md note per ticker (its inputs and whole valuation history) plus Settings.md — these notes are your data, so keep them if you reinstall the plugin. Folders are created automatically; blank means the vault root. Edit them through the plugin, not by hand. Changing this doesn't move any notes: the plugin just loads from the new folder, so point it back at the old one to see your earlier valuations.";
 
 type NumberSettingKey = "marketRiskPremium" | "taxRate" | "maintenanceCapexPct";
 
@@ -28,7 +28,7 @@ export interface StockValuationsSettings {
 	maintenanceCapexPct: number; // Ten Cap's MainPct, %
 	defaultMoneyScale: ScaleUnit; // default scale for dollar aggregates (debt, FCF, OCF, ...)
 	defaultSharesScale: ScaleUnit; // default scale for share counts
-	historyNotesFolder: string; // vault folder each ticker's auto-generated TICKER-history.md note goes in
+	historyNotesFolder: string; // vault folder holding the TICKER.md notes and Settings.md (kept in data.json, not Settings.md: it's how the notes are found)
 
 	// Optional features — off by default, this being the first. Each one is a
 	// self-contained toggle; add more here rather than growing new top-level
@@ -67,17 +67,16 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl).setName("Vault history notes").setHeading();
+		new Setting(containerEl).setName("Vault notes").setHeading();
 		new Setting(containerEl)
-			.setName("History notes folder")
+			.setName("Notes folder")
 			.setDesc(HISTORY_FOLDER_DESC)
 			.addText((text) =>
 				text
 					.setPlaceholder(DEFAULT_SETTINGS.historyNotesFolder)
 					.setValue(this.plugin.data.settings.historyNotesFolder)
 					.onChange(async (value) => {
-						this.plugin.data.settings.historyNotesFolder = normalizeFolderPath(value);
-						await this.plugin.data.saveSettings();
+						await this.plugin.data.setNotesFolder(normalizeFolderPath(value));
 					})
 			);
 
@@ -196,10 +195,10 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		return [
 			{
 				type: "group",
-				heading: "Vault history notes",
+				heading: "Vault notes",
 				items: [
 					{
-						name: "History notes folder",
+						name: "Notes folder",
 						desc: HISTORY_FOLDER_DESC,
 						control: {
 							type: "text",
@@ -277,8 +276,8 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 	}
 
 	// Explicit overrides (rather than relying on the framework defaults) so
-	// persistence always goes through saveSettings() — this plugin's data.json
-	// stores { settings, valuations } together, not settings alone.
+	// persistence always goes through saveSettings() (Settings.md) or
+	// setNotesFolder() — not the framework's default storage.
 	getControlValue(key: string): unknown {
 		return (this.plugin.data.settings as unknown as Record<string, unknown>)[key];
 	}
@@ -286,7 +285,8 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 	setControlValue(key: string, value: unknown): void {
 		const settings = this.plugin.data.settings as unknown as Record<string, unknown>;
 		if (key === "historyNotesFolder") {
-			settings[key] = typeof value === "string" ? normalizeFolderPath(value) : "";
+			void this.plugin.data.setNotesFolder(typeof value === "string" ? normalizeFolderPath(value) : "");
+			return;
 		} else if (key === "researchNotesFolder") {
 			const trimmed = typeof value === "string" ? normalizeFolderPath(value) : "";
 			settings[key] = trimmed;

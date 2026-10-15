@@ -1,8 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { StockValuationsView, VIEW_TYPE_STOCK_VALUATIONS } from "./view";
 import { DEFAULT_SETTINGS, StockValuationsSettingTab } from "./settings";
-import { syncHistoryNote } from "./noteSync";
-import { historyNotePath } from "./noteContent";
+import { ObsidianVault } from "./storage/ObsidianVault";
 import { DataRepository } from "./dataRepository";
 import { fetchAaaYield, fetchRiskFreeRate } from "./priceProvider";
 import { fetchMacroData, fetchMarketData } from "./macro";
@@ -14,15 +13,14 @@ export default class StockValuationsPlugin extends Plugin {
 		this.data = new DataRepository(
 			this,
 			DEFAULT_SETTINGS,
-			(ticker, record) => syncHistoryNote(this.app, this.data.settings.historyNotesFolder, ticker, record),
-			// The failure isn't necessarily the path — any error while building
-			// or writing the note lands here — so say what failed and include
-			// the actual error rather than guessing at a cause.
-			(e, ticker) =>
+			new ObsidianVault(this.app),
+			// The failure isn't necessarily the path — any error while reading
+			// or writing a note lands here — so say what failed and include the
+			// actual error rather than guessing at a cause. The note is the
+			// data, so unlike before this isn't a "saved anyway" case.
+			(e, subject) =>
 				new Notice(
-					`Saved, but couldn't update ${historyNotePath(this.data.settings.historyNotesFolder, ticker)}: ${
-						e instanceof Error ? e.message : String(e)
-					}`,
+					`Stock Valuations: problem with ${subject}: ${e instanceof Error ? e.message : String(e)}`,
 					10000
 				),
 			fetchRiskFreeRate,
@@ -77,7 +75,7 @@ export default class StockValuationsPlugin extends Plugin {
 
 		if (this.data.lastSeenVersion !== currentVersion) {
 			this.data.lastSeenVersion = currentVersion;
-			await this.data.saveSettings();
+			await this.data.saveLocalState();
 		}
 
 		if (isUpdate) {

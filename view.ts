@@ -1567,8 +1567,7 @@ export class StockValuationsView extends ItemView {
 					`Remove the research link for ${ticker}? "${file.basename}" itself won't be touched.`,
 					() => {
 						delete saved.researchNotePath;
-						// Research links aren't in the history note — nothing to rewrite.
-						void this.plugin.data.persistValuations([]);
+						void this.plugin.data.persistValuations([ticker]);
 						this.render();
 					},
 					"Remove link"
@@ -1896,8 +1895,7 @@ export class StockValuationsView extends ItemView {
 		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return;
 		saved.researchNotePath = path;
-		// Research links aren't in the history note — nothing to rewrite.
-		void this.plugin.data.persistValuations([]);
+		void this.plugin.data.persistValuations([ticker]);
 		this.render();
 	}
 
@@ -3218,7 +3216,7 @@ export class StockValuationsView extends ItemView {
 		}
 
 		// Only the tickers whose price (and so history) actually changed get
-		// their history note rewritten — a failed fetch leaves its note alone.
+		// their note rewritten — a failed fetch leaves its note alone.
 		if (updated.length > 0) {
 			void this.plugin.data.persistValuations(updated);
 		}

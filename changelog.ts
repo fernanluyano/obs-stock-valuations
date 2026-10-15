@@ -8,8 +8,11 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
-		version: "1.2.0",
+		version: "2.0.0",
 		highlights: [
+			"💾 Breaking: your valuations and settings now live in your vault as Markdown notes instead of the plugin's data.json. Each ticker has its own note, TICKER.md (e.g. ADBE.md), holding every Bull/Base/Bear input and the whole valuation history; Settings.md holds your settings. Remove the plugin and reinstall it and everything comes back from those notes — keep the folder (Settings → \"Notes folder\", default Stock Valuations). data.json now only caches market data",
+			"🔁 Upgrading is automatic and runs once on first start: every saved ticker is written to a note, Settings.md is written last as the completion marker, and nothing existing is overwritten (an existing file named TICKER.md is left alone and the ticker gets TICKER (valuation).md instead). Your old TICKER-history.md files are left exactly as they were and are no longer updated — delete them whenever you like. Versions before 2.0 can't read the new notes, so don't downgrade",
+			"🗑️ Deleting a ticker now moves its note to Obsidian's trash (the note is your data, so leaving it would bring the ticker back). Changing the notes folder doesn't move any notes — it just loads from the new folder. The notes are written by the plugin: a note whose history table has a row the plugin can't read is reported and left untouched rather than overwritten",
 			"🎚️ New \"Bulk edit\" button on the saved-valuations table — change the market risk premium (MRP) for several tickers at once. Pick the tickers (all selected by default), enter a value, and it's applied to every Bull/Base/Bear case of each one and recalculated. A blank field leaves each ticker's value alone, and company-specific inputs (beta, growth, tax rate, ...) can't be bulk edited. Each updated ticker also gets a Valuation history entry",
 			"🏦 The AAA corporate bond yield (Graham's Y) is now fetched automatically, like the risk-free rate — Moody's Seasoned Aaa yield from FRED, cached for 24 hours. New valuations are pre-filled with it, \"Fetch data\" fills it into a blank field, and \"Refresh prices\" force-refreshes it across every saved ticker (so it now moves Graham values too). The Settings entry is gone; tickers saved earlier keep their old value until the next \"Refresh prices\"",
 		],
