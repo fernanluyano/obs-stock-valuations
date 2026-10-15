@@ -8,6 +8,12 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "2.0.1",
+		highlights: [
+			"🐛 Fixed the date range under \"Valuation history\" showing backwards (newest → oldest) after the plugin reloaded. Only that label was affected — your notes, the history table, the charts and everything saved were always correct, and nothing needs repairing",
+		],
+	},
+	{
 		version: "2.0.0",
 		highlights: [
 			"💾 Breaking: your valuations and settings now live in your vault as Markdown notes instead of the plugin's data.json. Each ticker has its own note, TICKER.md (e.g. ADBE.md), holding every Bull/Base/Bear input and the whole valuation history; Settings.md holds your settings. Remove the plugin and reinstall it and everything comes back from those notes — keep the folder (Settings → \"Notes folder\", default Stock Valuations). data.json now only caches market data",

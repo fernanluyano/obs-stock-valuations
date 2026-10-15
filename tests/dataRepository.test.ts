@@ -3,6 +3,7 @@ import { DataRepository, PluginDataAdapter } from "../dataRepository";
 import type { SavedValuation } from "../valuationStore";
 import type { LegacySavedValuation } from "../migrations";
 import { computeResultsForState } from "../valuationCalc";
+import { compactHistory, deleteHistoryEntry } from "../historyStore";
 import { parseProps } from "../notes/frontmatter";
 import { buildSettingsNote } from "../notes/settingsNote";
 import { buildValuationNote } from "../notes/valuationNote";
@@ -611,6 +612,50 @@ describe("DataRepository valuation CRUD", () => {
 		const reloaded = newRepo(vault);
 		await reloaded.load();
 		expect(reloaded.getValuation("ACME")!.researchNotePath).toBe("Research/ACME.md");
+	});
+
+	it("compacting or deleting history entries shrinks the note's table, and a reload sees the shorter history", async () => {
+		const DAY = 24 * 60 * 60 * 1000;
+		const now = Date.UTC(2026, 9, 15, 12);
+		const entry = (at: number) => ({ ...fixtureHistory[0], at });
+		// Three old entries in one January and two in one February (all > 6 months ago), plus two recent ones.
+		const history = [
+			entry(Date.UTC(2026, 0, 5, 12)),
+			entry(Date.UTC(2026, 0, 12, 12)),
+			entry(Date.UTC(2026, 0, 20, 12)),
+			entry(Date.UTC(2026, 1, 3, 12)),
+			entry(Date.UTC(2026, 1, 17, 12)),
+			entry(now - 10 * DAY),
+			entry(now - 2 * DAY),
+		];
+		const { vault, repo } = await loadedRepo();
+		await repo.saveValuation("ACME", fixtureValuation({ history }));
+
+		const live = repo.getValuation("ACME")!;
+		live.history = compactHistory(live.history!, now);
+		await repo.persistValuations(["ACME"]);
+
+		const afterCompact = newRepo(vault);
+		await afterCompact.load();
+		const compacted = afterCompact.getValuation("ACME")!.history!;
+		expect(compacted).toHaveLength(4); // one for January, one for February, two recent
+		expect(compacted.map((e) => e.at)).toEqual(live.history!.map((e) => e.at));
+
+		const first = afterCompact.getValuation("ACME")!;
+		first.history = deleteHistoryEntry(first.history!, now - 2 * DAY);
+		await afterCompact.persistValuations(["ACME"]);
+		const afterDelete = newRepo(vault);
+		await afterDelete.load();
+		expect(afterDelete.getValuation("ACME")!.history).toHaveLength(3);
+
+		// Deleting the last entries leaves a note with an empty table, still readable.
+		const last = afterDelete.getValuation("ACME")!;
+		delete last.history;
+		await afterDelete.persistValuations(["ACME"]);
+		const afterEmpty = newRepo(vault);
+		await afterEmpty.load();
+		expect(afterEmpty.getValuation("ACME")).toBeDefined();
+		expect(afterEmpty.getValuation("ACME")!.history).toBeUndefined();
 	});
 
 	it("tickers() and getAllValuations() reflect every saved ticker", async () => {

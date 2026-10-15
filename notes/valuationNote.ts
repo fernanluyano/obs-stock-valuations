@@ -190,7 +190,9 @@ function parseHistory(content: string, issues: string[]): HistoryEntry[] {
 		}
 		entries.push(entry as unknown as HistoryEntry);
 	});
-	return entries;
+	// The note lists newest first for reading, but in memory a history is oldest first (see
+	// appendHistoryEntry) and the view reads its date range off the two ends.
+	return entries.sort((a, b) => a.at - b.at);
 }
 
 // A note that can't give a ticker and valid scales is skipped and reported by the caller; row-level

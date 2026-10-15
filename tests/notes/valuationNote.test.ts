@@ -70,6 +70,13 @@ describe("buildValuationNote / parseValuationNote", () => {
 		expect(dataRows[1].startsWith("| 1690000000000 |")).toBe(true);
 	});
 
+	it("reads the history oldest first even though the note lists it newest first", () => {
+		const parsed = parse(buildValuationNote("ACME", fixtureValuation({ history: fixtureHistory })));
+		if (!parsed.ok) throw new Error(parsed.reason);
+		const ats = parsed.record.history!.map((e) => e.at);
+		expect(ats).toEqual([...ats].sort((a, b) => a - b));
+	});
+
 	it("writes NaN and Infinity as empty cells, read back as null", () => {
 		const record = fixtureValuation({
 			history: [{ ...fixtureHistory[0], dcfBaseIv: NaN, tenCapIv: Infinity }],

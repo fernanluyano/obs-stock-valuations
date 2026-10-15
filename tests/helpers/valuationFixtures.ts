@@ -67,22 +67,8 @@ export function fixtureValuation(overrides: Partial<SavedValuation> = {}, ticker
 	};
 }
 
+// Oldest first, the in-memory order (appendHistoryEntry); the note itself lists newest first.
 export const fixtureHistory = [
-	{
-		at: 1700000000000,
-		price: 50.25,
-		dcfBearIv: 40.1,
-		dcfBaseIv: 60,
-		dcfBullIv: 80.333333333,
-		grahamBearIv: 45,
-		grahamBaseIv: 55,
-		grahamBullIv: 65,
-		tenCapIv: 45,
-		impliedGrowth: 0.07,
-		ddmBearIv: null,
-		ddmBaseIv: null,
-		ddmBullIv: null,
-	},
 	{
 		at: 1690000000000,
 		price: 48,
@@ -97,5 +83,20 @@ export const fixtureHistory = [
 		ddmBearIv: 30,
 		ddmBaseIv: 35,
 		ddmBullIv: 40,
+	},
+	{
+		at: 1700000000000,
+		price: 50.25,
+		dcfBearIv: 40.1,
+		dcfBaseIv: 60,
+		dcfBullIv: 80.333333333,
+		grahamBearIv: 45,
+		grahamBaseIv: 55,
+		grahamBullIv: 65,
+		tenCapIv: 45,
+		impliedGrowth: 0.07,
+		ddmBearIv: null,
+		ddmBaseIv: null,
+		ddmBullIv: null,
 	},
 ];
