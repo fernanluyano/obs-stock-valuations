@@ -2393,3 +2393,25 @@ p.sv-docs-fit-heading {
 .sv-docs-other-list li {
 	margin-bottom: var(--size-4-2);
 }
+
+.sv-bulk-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+}
+
+.sv-bulk-tickers {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--size-4-2) var(--size-4-4);
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+.sv-bulk-ticker {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+}

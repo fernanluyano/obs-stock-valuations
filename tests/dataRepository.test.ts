@@ -143,6 +143,40 @@ function fixtureSettings(overrides: Partial<FixtureSettings> = {}): FixtureSetti
 	return { ...DEFAULT_SETTINGS, ...overrides };
 }
 
+describe("DataRepository AAA yield", () => {
+	const noMacro = () => Promise.resolve(null);
+
+	function repoWithAaa(fetchAaa: () => Promise<number | null>) {
+		return new DataRepository(fakeAdapter(null), fixtureSettings(), vi.fn(), () => {}, noMacro, noMacro, noMacro, fetchAaa);
+	}
+
+	it("falls back to a placeholder until something has been fetched", () => {
+		expect(repoWithAaa(() => Promise.resolve(null)).getCachedAaaYield()).toBe(5.5);
+	});
+
+	it("fetches once and serves the cache within the TTL", async () => {
+		const fetchAaa = vi.fn().mockResolvedValue(6.15);
+		const repo = repoWithAaa(fetchAaa);
+		expect(await repo.refreshAaaYield()).toBe(6.15);
+		expect(await repo.refreshAaaYield()).toBe(6.15);
+		expect(fetchAaa).toHaveBeenCalledTimes(1);
+	});
+
+	it("force bypasses the cache", async () => {
+		const fetchAaa = vi.fn().mockResolvedValueOnce(6.15).mockResolvedValueOnce(6.2);
+		const repo = repoWithAaa(fetchAaa);
+		await repo.refreshAaaYield();
+		expect(await repo.refreshAaaYield(true)).toBe(6.2);
+	});
+
+	it("keeps the cached value when a fetch fails", async () => {
+		const fetchAaa = vi.fn().mockResolvedValueOnce(6.15).mockResolvedValueOnce(null);
+		const repo = repoWithAaa(fetchAaa);
+		await repo.refreshAaaYield();
+		expect(await repo.refreshAaaYield(true)).toBe(6.15);
+	});
+});
+
 describe("DataRepository.load", () => {
 	it("starts from the default settings and an empty table on a fresh install", async () => {
 		const adapter = fakeAdapter(null);

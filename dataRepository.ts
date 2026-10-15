@@ -20,6 +20,17 @@ interface RfrCache {
 	fetchedAt: number;
 }
 
+// FRED's DAAA is a daily series, so the same 24h TTL as the RFR applies.
+const AAA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Used only until the first successful fetch lands (first run, offline).
+const FALLBACK_AAA_YIELD = 5.5;
+
+interface AaaCache {
+	value: number;
+	fetchedAt: number;
+}
+
 // The Shiller-derived dataset only moves when the upstream fork's GitHub
 // Action is manually re-run (see plan.md) — same 24h TTL as the RFR cache is
 // generous, not load-bearing precision.
@@ -49,6 +60,7 @@ export interface PluginData {
 	schemaVersion?: number;
 	lastSeenVersion?: string;
 	rfrCache?: RfrCache;
+	aaaCache?: AaaCache;
 	macroCache?: MacroCache;
 	marketCache?: MarketCache;
 }
@@ -81,6 +93,10 @@ function folderOfPath(path: string): string {
 // real Obsidian runtime into DataRepository's otherwise Obsidian-free tests.
 export type FetchRfrFn = () => Promise<number | null>;
 
+// Fetches the current AAA corporate bond yield (FRED DAAA), or null on
+// failure. Injected for the same reason as FetchRfrFn.
+export type FetchAaaYieldFn = () => Promise<number | null>;
+
 // Fetches the rolling window of Shiller CAPE/macro rows, or null on failure.
 // Injected rather than importing macro.ts directly — same reasoning as
 // FetchRfrFn above (that module imports Obsidian's requestUrl at the value
@@ -102,6 +118,7 @@ export class DataRepository {
 	private valuations: ValuationTable = {};
 	private schemaVersion: number = CURRENT_SCHEMA_VERSION;
 	private rfrCache: RfrCache | undefined;
+	private aaaCache: AaaCache | undefined;
 	private macroCache: MacroCache | undefined;
 	private marketCache: MarketCache | undefined;
 
@@ -112,7 +129,8 @@ export class DataRepository {
 		private readonly onNoteSyncError: (error: unknown, ticker: string) => void = () => {},
 		private readonly fetchRfr: FetchRfrFn = () => Promise.resolve(null),
 		private readonly fetchMacro: FetchMacroDataFn = () => Promise.resolve(null),
-		private readonly fetchMarket: FetchMarketDataFn = () => Promise.resolve(null)
+		private readonly fetchMarket: FetchMarketDataFn = () => Promise.resolve(null),
+		private readonly fetchAaa: FetchAaaYieldFn = () => Promise.resolve(null)
 	) {
 		this.settings = defaultSettings;
 	}
@@ -137,6 +155,7 @@ export class DataRepository {
 		}
 		this.lastSeenVersion = data.lastSeenVersion;
 		this.rfrCache = data.rfrCache;
+		this.aaaCache = data.aaaCache;
 		this.macroCache = data.macroCache;
 		// A cache from before the snapshot grew `quotes` (price + 5-day change
 		// per symbol) is dropped rather than migrated — it's refetched anyway.
@@ -221,6 +240,27 @@ export class DataRepository {
 			await this.writeToDisk();
 		}
 		return this.getCachedRiskFreeRate();
+	}
+
+	// Last fetched/cached AAA corporate bond yield, without triggering a fetch.
+	getCachedAaaYield(): number {
+		return this.aaaCache?.value ?? FALLBACK_AAA_YIELD;
+	}
+
+	// Same contract as refreshRiskFreeRate: refetches (from FRED) only if the
+	// cache is missing/stale or `force` is set, and a failed fetch falls back
+	// to whatever's already cached.
+	async refreshAaaYield(force = false): Promise<number> {
+		const now = Date.now();
+		if (!force && this.aaaCache && now - this.aaaCache.fetchedAt < AAA_CACHE_TTL_MS) {
+			return this.aaaCache.value;
+		}
+		const value = await this.fetchAaa();
+		if (value !== null) {
+			this.aaaCache = { value, fetchedAt: now };
+			await this.writeToDisk();
+		}
+		return this.getCachedAaaYield();
 	}
 
 	// Last fetched/cached macro rows, without triggering a fetch — null until
@@ -336,6 +376,7 @@ export class DataRepository {
 			schemaVersion: this.schemaVersion,
 			lastSeenVersion: this.lastSeenVersion,
 			rfrCache: this.rfrCache,
+			aaaCache: this.aaaCache,
 			macroCache: this.macroCache,
 			marketCache: this.marketCache,
 		};

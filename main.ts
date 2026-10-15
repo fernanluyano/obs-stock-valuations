@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS, StockValuationsSettingTab } from "./settings";
 import { syncHistoryNote } from "./noteSync";
 import { historyNotePath } from "./noteContent";
 import { DataRepository } from "./dataRepository";
-import { fetchRiskFreeRate } from "./priceProvider";
+import { fetchAaaYield, fetchRiskFreeRate } from "./priceProvider";
 import { fetchMacroData, fetchMarketData } from "./macro";
 
 export default class StockValuationsPlugin extends Plugin {
@@ -27,7 +27,8 @@ export default class StockValuationsPlugin extends Plugin {
 				),
 			fetchRiskFreeRate,
 			fetchMacroData,
-			fetchMarketData
+			fetchMarketData,
+			fetchAaaYield
 		);
 		await this.data.load();
 

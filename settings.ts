@@ -14,7 +14,7 @@ function normalizeFolderPath(value: string): string {
 const HISTORY_FOLDER_DESC =
 	"Vault folder for each ticker's auto-generated TICKER-history.md note — its whole valuation history, one row per saved valuation or price refresh (folders are created automatically; blank means the vault root). Only the ticker that changed is rewritten, never all of them. Don't hand-edit these notes, changes there won't stick. Changing this doesn't move notes already written — new writes just go to the new folder.";
 
-type NumberSettingKey = "marketRiskPremium" | "taxRate" | "maintenanceCapexPct" | "aaaBondYield";
+type NumberSettingKey = "marketRiskPremium" | "taxRate" | "maintenanceCapexPct";
 
 type ScaleSettingKey = "defaultMoneyScale" | "defaultSharesScale";
 
@@ -26,7 +26,6 @@ export interface StockValuationsSettings {
 	marketRiskPremium: number; // %
 	taxRate: number; // effective tax rate, used as a WACC fallback if never fetched or typed, %
 	maintenanceCapexPct: number; // Ten Cap's MainPct, %
-	aaaBondYield: number; // Graham's Y, %
 	defaultMoneyScale: ScaleUnit; // default scale for dollar aggregates (debt, FCF, OCF, ...)
 	defaultSharesScale: ScaleUnit; // default scale for share counts
 	historyNotesFolder: string; // vault folder each ticker's auto-generated TICKER-history.md note goes in
@@ -42,7 +41,6 @@ export const DEFAULT_SETTINGS: StockValuationsSettings = {
 	marketRiskPremium: 5,
 	taxRate: 21,
 	maintenanceCapexPct: 50,
-	aaaBondYield: 5,
 	defaultMoneyScale: "millions",
 	defaultSharesScale: "millions",
 	historyNotesFolder: "Stock Valuations",
@@ -100,7 +98,7 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Default assumptions")
 			.setDesc(
-				"Pre-filled into the valuation calculator, except Tax rate — that field is left blank so \"Fetch data\" can always fill it in from SEC EDGAR; this value is used only as a fallback if you leave it blank and never fetch. Risk-free rate isn't here either — it's fetched automatically from Yahoo Finance (^TNX) and cached for 24 hours. Per-stock numbers (beta, EPS, shares, debt, price, ...) are always entered fresh."
+				"Pre-filled into the valuation calculator, except Tax rate — that field is left blank so \"Fetch data\" can always fill it in from SEC EDGAR; this value is used only as a fallback if you leave it blank and never fetch. Risk-free rate and AAA corporate bond yield aren't here either — they're fetched automatically (Yahoo Finance ^TNX and FRED's Moody's Aaa series) and cached for 24 hours. Per-stock numbers (beta, EPS, shares, debt, price, ...) are always entered fresh."
 			)
 			.setHeading();
 
@@ -118,11 +116,6 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 			"Maintenance capex (%)",
 			"Share of total capex treated as maintenance (vs. growth) capex, as a percentage, for the Ten Cap owner earnings calc.",
 			"maintenanceCapexPct"
-		);
-		this.numberSetting(
-			"AAA corporate bond yield (%)",
-			"Current AAA corporate bond yield, as a percentage, for the Graham formula.",
-			"aaaBondYield"
 		);
 
 		new Setting(containerEl)
@@ -251,11 +244,6 @@ export class StockValuationsSettingTab extends PluginSettingTab {
 						"Maintenance capex (%)",
 						"Share of total capex treated as maintenance (vs. growth) capex, as a percentage, for the Ten Cap owner earnings calc.",
 						"maintenanceCapexPct"
-					),
-					this.numberDefinition(
-						"AAA corporate bond yield (%)",
-						"Current AAA corporate bond yield, as a percentage, for the Graham formula.",
-						"aaaBondYield"
 					),
 				],
 			},

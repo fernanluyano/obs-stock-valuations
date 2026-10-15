@@ -47,6 +47,7 @@ import {
 	PaybackTone,
 	TenCapInputs,
 } from "./calculations";
+import { applyBulkChanges, BULK_EDITABLE_FIELDS, BULK_FIELD_LABELS, BulkChanges, BulkField } from "./bulkEdit";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
 import { fetchQuotePrice } from "./priceProvider";
@@ -352,6 +353,86 @@ class ConfirmModal extends Modal {
 	}
 }
 
+// "Bulk edit" dialog: pick tickers, fill in any of the market-wide inputs
+// (BULK_EDITABLE_FIELDS). A blank field is left unchanged on every ticker.
+class BulkEditModal extends Modal {
+	constructor(
+		app: App,
+		private tickers: string[],
+		private onApply: (tickers: string[], changes: BulkChanges) => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl("h3", { text: "Bulk edit market-wide inputs" });
+		contentEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Applies to every scenario of each selected ticker. Leave a field blank to keep each ticker's current value. Company-specific inputs (beta, growth, tax rate, ...) can't be bulk edited.",
+		});
+
+		const inputs = {} as Record<BulkField, HTMLInputElement>;
+		for (const field of BULK_EDITABLE_FIELDS) {
+			const row = contentEl.createDiv({ cls: "sv-bulk-row" });
+			row.createEl("label", { text: BULK_FIELD_LABELS[field] });
+			inputs[field] = row.createEl("input", { type: "text", placeholder: "unchanged" });
+			inputs[field].inputMode = "decimal";
+		}
+
+		contentEl.createEl("h4", { text: "Tickers" });
+		const checks = new Map<string, HTMLInputElement>();
+		const list = contentEl.createDiv({ cls: "sv-bulk-tickers" });
+		const allLabel = list.createEl("label", { cls: "sv-bulk-ticker" });
+		const allBox = allLabel.createEl("input", { type: "checkbox" });
+		allBox.checked = true;
+		allLabel.createSpan({ text: "Select all" });
+		allBox.addEventListener("change", () => {
+			for (const box of checks.values()) box.checked = allBox.checked;
+		});
+		for (const ticker of this.tickers) {
+			const label = list.createEl("label", { cls: "sv-bulk-ticker" });
+			const box = label.createEl("input", { type: "checkbox" });
+			box.checked = true;
+			label.createSpan({ text: ticker });
+			checks.set(ticker, box);
+			box.addEventListener("change", () => {
+				allBox.checked = [...checks.values()].every((b) => b.checked);
+			});
+		}
+
+		const buttonRow = contentEl.createDiv({ cls: "sv-modal-buttons" });
+		buttonRow.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+		buttonRow.createEl("button", { text: "Apply", cls: "mod-cta" }).addEventListener("click", () => {
+			const changes: BulkChanges = {};
+			for (const field of BULK_EDITABLE_FIELDS) {
+				const raw = inputs[field].value.trim();
+				if (raw === "") continue;
+				if (isNaN(Number(raw))) {
+					new Notice(`${BULK_FIELD_LABELS[field]} must be a number.`);
+					return;
+				}
+				changes[field] = raw;
+			}
+			const selected = [...checks].filter(([, box]) => box.checked).map(([t]) => t);
+			if (Object.keys(changes).length === 0) {
+				new Notice("Enter a value for at least one field.");
+				return;
+			}
+			if (selected.length === 0) {
+				new Notice("Select at least one ticker.");
+				return;
+			}
+			this.close();
+			this.onApply(selected, changes);
+		});
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+}
+
 // Vault-wide file picker for "Choose an existing note…" — deliberately not
 // restricted to markdown, since the plugin never reads the linked file.
 class LinkNoteSuggestModal extends FuzzySuggestModal<TFile> {
@@ -535,7 +616,7 @@ export class StockValuationsView extends ItemView {
 
 			eps: "",
 			grahamGrowth: "",
-			aaaYield: String(s.aaaBondYield),
+			aaaYield: String(this.plugin.data.getCachedAaaYield()),
 
 			ocf: "",
 			capex: "",
@@ -1214,6 +1295,17 @@ export class StockValuationsView extends ItemView {
 		refreshBtn.toggleClass("sv-hidden", tickers.length === 0);
 		refreshBtn.addEventListener("click", () => {
 			void this.refreshAllPrices(refreshBtn, refreshLabel);
+		});
+
+		const bulkBtn = headerActions.createEl("button", { cls: "sv-docs-btn" });
+		setIcon(bulkBtn.createSpan({ cls: "sv-docs-btn-icon" }), "sliders-horizontal");
+		bulkBtn.createSpan({ text: "Bulk edit" });
+		setTooltip(bulkBtn, "Change market-wide inputs (MRP) for several tickers at once");
+		bulkBtn.toggleClass("sv-hidden", tickers.length === 0);
+		bulkBtn.addEventListener("click", () => {
+			new BulkEditModal(this.app, [...tickers].sort(), (selected, changes) => {
+				void this.bulkEdit(selected, changes);
+			}).open();
 		});
 
 		const newBtn = headerActions.createEl("button", { text: "+ New valuation", cls: "mod-cta" });
@@ -2960,6 +3052,14 @@ export class StockValuationsView extends ItemView {
 				keptExisting.push("Risk-free rate");
 			}
 
+			if (this.isBlankOrZero("aaaYield")) {
+				const aaa = await this.plugin.data.refreshAaaYield();
+				this.setStateField("aaaYield", this.roundForField(aaa));
+				filled.push("AAA bond yield");
+			} else {
+				keptExisting.push("AAA bond yield");
+			}
+
 			const result = await fetchFundamentals(ticker, secHttpGet);
 			if (isFundamentalsError(result)) {
 				fundamentalsErrorMessage = result.message;
@@ -3039,12 +3139,26 @@ export class StockValuationsView extends ItemView {
 		new Notice(`${entityLabel}: ${parts.join(" ")}`, 15000);
 	}
 
-	// Refreshes the price and the risk-free rate for every saved valuation
-	// (table button, not the per-ticker form) — no other fundamentals are
-	// touched. Everything price/RFR-derived is recomputed: MoS and Ten Cap
-	// yield always; market cap too (price × shares), which along with RFR
-	// moves WACC and DCF IV. Graham and Ten Cap IV don't depend on WACC/market
-	// cap, so those stay fixed. Also appends a history entry per ticker (see
+	private async bulkEdit(tickers: string[], changes: BulkChanges): Promise<void> {
+		const now = Date.now();
+		const updated: string[] = [];
+		for (const ticker of tickers) {
+			const record = this.plugin.data.getValuation(ticker);
+			if (!record) continue;
+			applyBulkChanges(record, changes, this.plugin.data.settings.taxRate, now);
+			updated.push(ticker);
+		}
+		await this.plugin.data.persistValuations(updated);
+		this.render();
+		new Notice(`Updated ${updated.length} ticker${updated.length === 1 ? "" : "s"}.`);
+	}
+
+	// Refreshes the price, the risk-free rate, and the AAA bond yield for every
+	// saved valuation (table button, not the per-ticker form) — no other
+	// fundamentals are touched. Everything derived is recomputed: MoS and Ten
+	// Cap yield always; market cap too (price × shares), which along with RFR
+	// moves WACC and DCF IV; the AAA yield moves Graham IV. Ten Cap IV doesn't
+	// depend on any of these, so it stays fixed. Also appends a history entry per ticker (see
 	// buildHistoryEntry) — MoS/IV moving with price is exactly what the
 	// history timeline exists to track, and appendHistoryEntry's same-day
 	// dedup means refreshing repeatedly in one sitting still only ever keeps
@@ -3065,6 +3179,8 @@ export class StockValuationsView extends ItemView {
 		// the 24h cache since this is an explicit manual refresh) once outside the
 		// loop below and applied to every saved valuation.
 		const rfr = this.roundForField(await this.plugin.data.refreshRiskFreeRate(true));
+		// Same for the AAA bond yield (Graham's Y), which moves every IV via Graham.
+		const aaaYield = this.roundForField(await this.plugin.data.refreshAaaYield(true));
 
 		try {
 			for (const ticker of tickers) {
@@ -3081,6 +3197,7 @@ export class StockValuationsView extends ItemView {
 				for (const scenario of Object.values(record.scenarios)) {
 					scenario.state.price = this.roundForField(price);
 					scenario.state.rfr = rfr;
+					scenario.state.aaaYield = aaaYield;
 					scenario.results = computeResultsForState(
 						scenario.state,
 						record.moneyScale,

@@ -34,7 +34,7 @@ export const HELP_TEXT: Record<string, string> = {
 
 	eps: "Trailing twelve month diluted earnings per share." + SEC_NOTE,
 	grahamGrowth: "Expected annual EPS growth rate over the next 7-10 years, per Graham's original formula.",
-	aaaYield: "Current AAA corporate bond yield — Graham's formula scales the multiple down as this rises above its historical ~4.4% baseline.",
+	aaaYield: "Current AAA corporate bond yield — Graham's formula scales the multiple down as this rises above its historical ~4.4% baseline. Pre-filled from a cached FRED quote (Moody's Seasoned Aaa, refreshed at most once every 24 hours), auto-filled via \"Fetch data\" only into a blank/zero field, and force-refreshed across every saved ticker by \"Refresh prices\".",
 
 	ocf: "Operating cash flow over the trailing twelve months." + SEC_NOTE,
 	capex: "Total capital expenditures over the trailing twelve months." + SEC_NOTE,

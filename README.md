@@ -72,11 +72,10 @@ A built-in documentation screen, opened via the **Help** button in the table hea
 | History notes folder | Where each ticker's auto-generated `TICKER-history.md` note is written; folders are created automatically, and blank means the vault root. Changing it doesn't move notes already written |
 | Default money scale | Pre-fills the unit dropdown for dollar figures (debt, market cap, FCF, OCF, capex, interest expense, net debt) |
 | Default share count scale | Pre-fills the unit dropdown for diluted shares outstanding |
-| Risk-free rate (%) | 10-year US Treasury yield, pre-filled into new calculations |
+| Risk-free rate / AAA bond yield | Not settings — fetched automatically (10-year Treasury from Yahoo, Moody's Aaa yield from FRED), cached for 24 hours, and pre-filled into new calculations |
 | Market risk premium (%) | Pre-filled into new calculations |
 | Tax rate (%) | Effective tax rate, used as the WACC after-tax cost of debt default |
 | Maintenance capex (%) | Default share of total capex treated as maintenance vs. growth capex, for Ten Cap |
-| AAA corporate bond yield (%) | Default for the Graham formula |
 | Link research notes | Off by default. Adds the Research link column/cell described above; the first entry under **Optional features**, a home for future opt-in additions |
 | Research notes folder | Vault folder new research notes are created in. Required to activate the row above — has no default, and left blank the Research column stays hidden |
 

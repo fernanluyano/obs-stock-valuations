@@ -8,6 +8,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "1.2.0",
+		highlights: [
+			"🎚️ New \"Bulk edit\" button on the saved-valuations table — change the market risk premium (MRP) for several tickers at once. Pick the tickers (all selected by default), enter a value, and it's applied to every Bull/Base/Bear case of each one and recalculated. A blank field leaves each ticker's value alone, and company-specific inputs (beta, growth, tax rate, ...) can't be bulk edited. Each updated ticker also gets a Valuation history entry",
+			"🏦 The AAA corporate bond yield (Graham's Y) is now fetched automatically, like the risk-free rate — Moody's Seasoned Aaa yield from FRED, cached for 24 hours. New valuations are pre-filled with it, \"Fetch data\" fills it into a blank field, and \"Refresh prices\" force-refreshes it across every saved ticker (so it now moves Graham values too). The Settings entry is gone; tickers saved earlier keep their old value until the next \"Refresh prices\"",
+		],
+	},
+	{
 		version: "1.1.0",
 		highlights: [
 			"🃏 The Macro screen's numbers are now cards with a colored top edge and a status pill (CHEAP / FAIR / EXPENSIVE, LOW / ELEVATED / HIGH, NORMAL / FLAT / INVERTED, and so on) instead of plain figures. Each card's \"?\" help spells out its color cut points. TR-CAPE and dividend yield stay uncolored — there are no agreed cut points for them",
