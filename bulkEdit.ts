@@ -3,7 +3,7 @@
 // unit testable — see tests/bulkEdit.test.ts.
 import { appendHistoryEntry, buildHistoryEntry } from "./historyStore";
 import { computeResultsForState } from "./valuationCalc";
-import type { FormState, SavedValuation } from "./valuationStore";
+import type { SavedValuation } from "./valuationStore";
 
 // Only inputs that describe the market, not the company: the same value is
 // right for every ticker. Deliberately excludes anything fetched or judged
@@ -29,7 +29,7 @@ export function applyBulkChanges(record: SavedValuation, changes: BulkChanges, d
 			if (value) scenario.state[field] = value;
 		}
 		scenario.results = computeResultsForState(
-			scenario.state as FormState,
+			scenario.state,
 			record.moneyScale,
 			record.sharesScale,
 			defaultTaxRatePercent

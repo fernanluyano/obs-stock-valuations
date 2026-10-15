@@ -353,6 +353,27 @@ describe("DataRepository legacy data.json import", () => {
 		expect(repo.getValuation("ACME")!.history).toEqual(fixtureHistory);
 	});
 
+	it("imports research links, refresh times and every scenario's inputs exactly as stored — even a link that no longer resolves", async () => {
+		const stale = "investing/ACME-research.md"; // the file may since have moved; the import must not rewrite or drop it
+		const record = fixtureValuation({ researchNotePath: stale, lastPriceRefreshAt: 1700000005000, history: fixtureHistory });
+		const adapter = jsonAdapter({ settings: { enableResearchLinks: true, researchNotesFolder: "investing" }, valuations: { ACME: record }, schemaVersion: 2 });
+		const vault = new MemoryVault();
+		await newRepo(vault, adapter).load();
+
+		const reloaded = newRepo(vault, fakeAdapter(null)); // reinstall-style: notes only
+		await reloaded.load();
+		const loaded = reloaded.getValuation("ACME")!;
+
+		expect(loaded.researchNotePath).toBe(stale);
+		expect(loaded.lastPriceRefreshAt).toBe(1700000005000);
+		for (const key of ["bull", "base", "bear"] as const) {
+			expect(loaded.scenarios[key].state).toEqual(record.scenarios[key].state);
+		}
+		expect(loaded.history).toEqual(fixtureHistory);
+		expect(reloaded.settings.enableResearchLinks).toBe(true);
+		expect(reloaded.settings.researchNotesFolder).toBe("investing");
+	});
+
 	it("imports into the folder the legacy settings named, or the retired summary note's folder", async () => {
 		const vault = new MemoryVault();
 		const named = newRepo(vault, fakeAdapter({ settings: { historyNotesFolder: "Inv" }, valuations: { ACME: fixtureValuation() }, schemaVersion: 2 }));
