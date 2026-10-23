@@ -2415,3 +2415,8 @@ p.sv-docs-fit-heading {
 	align-items: center;
 	gap: var(--size-4-1);
 }
+
+.sv-loading {
+	padding: 1em;
+	color: var(--text-muted);
+}

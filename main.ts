@@ -8,6 +8,9 @@ import { fetchMacroData, fetchMarketData } from "./macro";
 
 export default class StockValuationsPlugin extends Plugin {
 	data!: DataRepository;
+	// False until the notes have been read at startup (see onload); views show
+	// a loading state meanwhile instead of an empty list.
+	dataLoaded = false;
 
 	async onload(): Promise<void> {
 		this.data = new DataRepository(
@@ -28,8 +31,6 @@ export default class StockValuationsPlugin extends Plugin {
 			fetchMarketData,
 			fetchAaaYield
 		);
-		await this.data.load();
-
 		this.registerView(
 			VIEW_TYPE_STOCK_VALUATIONS,
 			(leaf) => new StockValuationsView(leaf, this)
@@ -58,12 +59,32 @@ export default class StockValuationsPlugin extends Plugin {
 
 		this.addSettingTab(new StockValuationsSettingTab(this.app, this));
 
-		// Deferred to onLayoutReady rather than run inline here — opening a new
-		// leaf while Obsidian is still restoring the workspace on startup can
-		// fight with that restoration.
+		// Deferred to onLayoutReady rather than run inline here. The notes are the
+		// data, and on a cold start (mobile especially) the vault isn't indexed
+		// yet while onload runs, so reading them here finds nothing. Also, opening
+		// a new leaf while Obsidian is still restoring the workspace on startup
+		// can fight with that restoration.
 		this.app.workspace.onLayoutReady(() => {
-			void this.maybeShowChangelog();
+			void this.loadDataAndRefreshViews();
 		});
+	}
+
+	private async loadDataAndRefreshViews(): Promise<void> {
+		try {
+			await this.data.load();
+		} catch (e) {
+			console.error("Stock Valuations: failed to load data", e);
+			new Notice(
+				`Stock Valuations: failed to load data: ${e instanceof Error ? e.message : String(e)}`,
+				10000
+			);
+			return;
+		}
+		this.dataLoaded = true;
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS)) {
+			if (leaf.view instanceof StockValuationsView) leaf.view.onDataLoaded();
+		}
+		await this.maybeShowChangelog();
 	}
 
 	// Shows the current version's release notes exactly once, the first time

@@ -8,6 +8,12 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "2.0.2",
+		highlights: [
+			"🐛 Fixed the plugin showing no valuations after closing and reopening the app, mainly on mobile. It read your notes before Obsidian had finished indexing the vault, so it found none until the plugin was reloaded. It now waits for the vault to be ready, and shows \"Loading valuations…\" until then. Your notes were never affected and nothing needs repairing",
+		],
+	},
+	{
 		version: "2.0.1",
 		highlights: [
 			"🐛 Fixed the date range under \"Valuation history\" showing backwards (newest → oldest) after the plugin reloaded. Only that label was affected — your notes, the history table, the charts and everything saved were always correct, and nothing needs repairing",

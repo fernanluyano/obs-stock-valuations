@@ -565,12 +565,24 @@ export class StockValuationsView extends ItemView {
 	// Screen management
 	// ---------------------------------------------------------------------
 
+	// Called once the plugin has read the notes at startup: the form was built
+	// from default settings, so rebuild it before showing the real data.
+	onDataLoaded(): void {
+		this.resetForm();
+		this.render();
+	}
+
 	private render(): void {
 		this.destroyChart();
 		this.destroyTabulator();
 		const root = this.contentEl;
 		root.empty();
 		root.addClass("stock-valuations-view");
+
+		if (!this.plugin.dataLoaded) {
+			root.createDiv({ cls: "sv-loading", text: "Loading valuations…" });
+			return;
+		}
 
 		if (this.screen === "table") {
 			this.renderTable(root);
