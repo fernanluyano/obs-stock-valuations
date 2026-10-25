@@ -306,7 +306,27 @@ export const PAYBACK_MAX_YEARS = 30;
 export const PAYBACK_GOOD_YEARS = 8;
 export const PAYBACK_OK_YEARS = 10;
 
+// PEG ratio: P/E divided by expected annual EPS growth in percent points.
+// `growth` is a fraction (0.08 for 8%), like every growth input here. NaN when
+// it isn't meaningful: no positive price or EPS, or growth ≤ 0 (a PEG on
+// shrinking or flat earnings says nothing).
+export function calcPeg(price: number, eps: number, growth: number): number {
+	if (!(price > 0) || !(eps > 0) || !(growth > 0)) return NaN;
+	return price / eps / (growth * 100);
+}
+
+// PEG rule of thumb: ≤ 1 growth is cheap, ≤ 2 fair, beyond that you're paying up.
+export const PEG_GOOD = 1;
+export const PEG_OK = 2;
+
 export type PaybackTone = "pos" | "warn" | "neg";
+
+export function pegTone(peg: number): PaybackTone | null {
+	if (isNaN(peg)) return null;
+	if (peg <= PEG_GOOD) return "pos";
+	if (peg <= PEG_OK) return "warn";
+	return "neg";
+}
 
 // null when there's no payback to judge (FCF ≤ 0); Infinity (never within
 // PAYBACK_MAX_YEARS) is just a very long payback, so "neg".

@@ -151,6 +151,13 @@ describe("computeResultsForState", () => {
 		expect(r.paybackYears).toBeCloseTo(expected, 10);
 	});
 
+	it("computes pegRatio as (price ÷ EPS) ÷ the Graham growth input", () => {
+		const r = computeResultsForState(fixtureState({ price: "50", eps: "5", grahamGrowth: "8" }), "millions", "ones", 21);
+		expect(r.pegRatio).toBeCloseTo(10 / 8, 10);
+		const noGrowth = computeResultsForState(fixtureState({ grahamGrowth: "" }), "millions", "ones", 21);
+		expect(noGrowth.pegRatio).toBeNaN();
+	});
+
 	it("a higher price or a lower growth rate lengthens payback", () => {
 		const base = computeResultsForState(fixtureState({ price: "50", shares: "20000000" }), "millions", "ones", 21);
 		const pricier = computeResultsForState(fixtureState({ price: "80", shares: "20000000" }), "millions", "ones", 21);

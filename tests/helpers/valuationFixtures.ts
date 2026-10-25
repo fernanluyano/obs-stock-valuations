@@ -49,6 +49,7 @@ export function fixtureResults(overrides: Partial<Results> = {}): Results {
 		ddmMos: NaN,
 		costOfEquity: 0.1,
 		paybackYears: 7,
+		pegRatio: 1.5,
 		...overrides,
 	};
 }

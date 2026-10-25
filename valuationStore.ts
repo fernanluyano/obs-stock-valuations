@@ -49,6 +49,7 @@ export interface Results {
 	ddmIv: number;
 	ddmMos: number;
 	paybackYears: number; // Payback Time — NaN (FCF ≤ 0) / Infinity (> PAYBACK_MAX_YEARS) are meaningful
+	pegRatio: number; // P/E ÷ Graham growth — NaN when EPS or growth isn't positive
 }
 
 export type ScenarioKey = "bull" | "base" | "bear";
@@ -119,6 +120,15 @@ export interface SavedValuation {
 	// nothing about the note's contents or format is read or assumed.
 	// Preserved across form saves; removed only by explicitly unlinking it.
 	researchNotePath?: string;
+
+	// The user's own average entry price and the date (local YYYY-MM-DD) it
+	// applies from — typed in by hand on the form, shared by all three
+	// scenarios (a fact about the user, not a scenario assumption), never
+	// derived or logged over time. Both omitted when there's no position. The
+	// history chart draws the entry as a flat line from entryDate on, computed
+	// on the fly rather than stored per history entry (see entryLinePoints).
+	avgEntry?: number;
+	entryDate?: string;
 
 	// Saved-over-time timeline, appended to on every form Save and every price
 	// refresh — see buildHistoryEntry() in historyStore.ts. Omitted rather than

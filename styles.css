@@ -2167,6 +2167,23 @@ td.sv-num {
 	min-width: 280px;
 }
 
+/* Scenario title with the zoom button at the far right */
+.sv-chart-col-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.sv-chart-col-head h4 {
+	margin: 0;
+}
+
+/* Zoomed chart modal — wide, since the point is more room per chart */
+.modal.sv-chart-modal {
+	width: 90vw;
+	max-width: 1400px;
+}
+
 .sv-chart-col h3 {
 	font-family: var(--sv-serif);
 	margin: 0 0 var(--size-4-2) 0;

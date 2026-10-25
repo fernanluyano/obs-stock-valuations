@@ -45,6 +45,7 @@ import {
 	marginOfSafety,
 	paybackTone,
 	PaybackTone,
+	pegTone,
 	TenCapInputs,
 } from "./calculations";
 import { applyBulkChanges, BULK_EDITABLE_FIELDS, BULK_FIELD_LABELS, BulkChanges, BulkField } from "./bulkEdit";
@@ -68,7 +69,7 @@ import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, formatYears, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
 import { FormState, HistoryEntry, historyIv, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
-import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry } from "./historyStore";
+import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry, entryLinePoints } from "./historyStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS, VALUATION_HISTORY_DOC } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
@@ -353,6 +354,38 @@ class ConfirmModal extends Modal {
 	}
 }
 
+// A chart in a large modal — `build` draws it onto the canvas it's given, so
+// the inline and zoomed versions share one definition. Destroyed on close.
+class ChartZoomModal extends Modal {
+	private chart: Chart | null = null;
+
+	constructor(
+		app: App,
+		private title: string,
+		private build: (canvas: HTMLCanvasElement) => Chart
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.modalEl.addClass("sv-chart-modal");
+		this.contentEl.createEl("h3", { text: this.title });
+		this.contentEl.createEl("p", {
+			cls: "sv-chart-caption",
+			text: "Click a legend item to hide or show that line.",
+		});
+		const wrap = this.contentEl.createDiv({ cls: "sv-chart-canvas-wrap" });
+		wrap.setCssStyles({ height: "60vh" });
+		this.chart = this.build(wrap.createEl("canvas"));
+	}
+
+	onClose(): void {
+		this.chart?.destroy();
+		this.chart = null;
+		this.contentEl.empty();
+	}
+}
+
 // "Bulk edit" dialog: pick tickers, fill in any of the market-wide inputs
 // (BULK_EDITABLE_FIELDS). A blank field is left unchanged on every ticker.
 class BulkEditModal extends Modal {
@@ -474,6 +507,10 @@ export class StockValuationsView extends ItemView {
 	// used to tell "editing this same ticker" apart from "typed a ticker that
 	// collides with a different saved valuation" in saveValuation().
 	private originalTicker: string | null = null;
+	// The user's average entry price and its date (YYYY-MM-DD), as typed —
+	// shared by all three scenarios, so they live here rather than in FormState.
+	private avgEntry = "";
+	private entryDate = "";
 	private moneyScale!: ScaleUnit;
 	private sharesScale!: ScaleUnit;
 	private fundamentalsFetchInFlight = false;
@@ -642,6 +679,8 @@ export class StockValuationsView extends ItemView {
 	private resetForm(): void {
 		const s = this.plugin.data.settings;
 		this.originalTicker = null;
+		this.avgEntry = "";
+		this.entryDate = "";
 		this.moneyScale = s.defaultMoneyScale;
 		this.sharesScale = s.defaultSharesScale;
 		this.activeScenario = "base";
@@ -662,6 +701,8 @@ export class StockValuationsView extends ItemView {
 		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return;
 		this.originalTicker = ticker;
+		this.avgEntry = saved.avgEntry !== undefined ? String(saved.avgEntry) : "";
+		this.entryDate = saved.entryDate ?? "";
 		this.moneyScale = saved.moneyScale;
 		this.sharesScale = saved.sharesScale;
 		this.activeScenario = "base";
@@ -787,6 +828,12 @@ export class StockValuationsView extends ItemView {
 		return true;
 	}
 
+	// The typed average entry as a number; 0 when blank or not a number.
+	private entryNum(): number {
+		const n = parseFloat(this.avgEntry.replace(/,/g, ""));
+		return isFinite(n) && n > 0 ? n : 0;
+	}
+
 	private saveValuation(): void {
 		const ticker = this.state.ticker.trim().toUpperCase();
 		if (!ticker) {
@@ -838,6 +885,11 @@ export class StockValuationsView extends ItemView {
 		};
 		if (previousLink) record.researchNotePath = previousLink;
 		if (previousPriceRefresh) record.lastPriceRefreshAt = previousPriceRefresh;
+		const avgEntry = this.entryNum();
+		if (avgEntry > 0) {
+			record.avgEntry = avgEntry;
+			if (/^\d{4}-\d{2}-\d{2}$/.test(this.entryDate)) record.entryDate = this.entryDate;
+		}
 
 		// One history entry per explicit Save, same as one per price refresh
 		// (see refreshAllPrices) — appendHistoryEntry collapses same-day entries
@@ -1107,7 +1159,7 @@ export class StockValuationsView extends ItemView {
 		section.createEl("h3", { text: "Fair value vs. price" });
 		section.createEl("p", {
 			cls: "sv-chart-caption",
-			text: "Price against each method's fair value, spaced by actual elapsed time (not just entry order) — one chart per scenario, oldest to newest. A price line that stays well under fair value for a long stretch without the gap closing is the value-trap pattern this history table exists to surface. Ten Cap and price aren't scenario-specific, so those two lines are identical across all three charts.",
+			text: "Price against each method's fair value, spaced by actual elapsed time (not just entry order) — one chart per scenario, oldest to newest. A price line that stays well under fair value for a long stretch without the gap closing is the value-trap pattern this history table exists to surface. Ten Cap and price aren't scenario-specific, so those two lines are identical across all three charts. Click the zoom icon on a chart to open it larger, where you can click the legend to hide or show lines.",
 		});
 
 		const { mutedColor, normalColor, borderColor } = this.chartThemeColors(section);
@@ -1145,17 +1197,35 @@ export class StockValuationsView extends ItemView {
 			firstAt === lastAt
 				? [firstAt]
 				: Array.from({ length: X_TICK_COUNT }, (_, i) => firstAt + ((lastAt - firstAt) * i) / (X_TICK_COUNT - 1));
+		const saved = this.originalTicker ? this.plugin.data.getValuation(this.originalTicker) : undefined;
+		const entryLine = entryLinePoints(
+			saved?.avgEntry,
+			saved?.entryDate,
+			sorted.map((e) => e.at)
+		);
+		// Magenta: distinct from the price line (theme text color) and from every
+		// method color above, and not green/red, which mean MoS pos/neg here.
+		const entryColor = "#d6409f";
+		if (entryLine.length > 0) legendItem(entryColor, "Your entry (dashed)");
 		const row = section.createDiv({ cls: "sv-chart-row" });
 
 		for (const key of SCENARIO_KEYS) {
 			const fields = HISTORY_SCENARIO_FIELDS[key];
 			const col = row.createDiv({ cls: "sv-chart-col" });
-			col.createEl("h4", { text: SCENARIO_LABELS[key] });
+			const colHead = col.createDiv({ cls: "sv-chart-col-head" });
+			colHead.createEl("h4", { text: SCENARIO_LABELS[key] });
+			const zoomBtn = colHead.createEl("button", { cls: "clickable-icon sv-chart-zoom-btn" });
+			setIcon(zoomBtn, "maximize-2");
+			setTooltip(zoomBtn, "Zoom in");
 			const wrap = col.createDiv({ cls: "sv-chart-canvas-wrap" });
 			wrap.setCssStyles({ height: "220px" });
 			const canvas = wrap.createEl("canvas");
 
-			const chart = new Chart(canvas, {
+			// Built twice per scenario: the inline chart, and the larger one in
+			// the zoom modal, where the legend is shown and clickable (hides or
+			// shows a line) — kept out of the inline charts, which share the one
+			// static legend above them.
+			const buildChart = (target: HTMLCanvasElement, zoomed: boolean): Chart => new Chart(target, {
 				type: "line",
 				data: {
 					datasets: [
@@ -1206,6 +1276,19 @@ export class StockValuationsView extends ItemView {
 							pointRadius: 1.5,
 							tension: 0.4,
 						},
+						// Flat line at the user's average entry, from the entry date
+						// on — recomputed here each render, never stored per entry.
+						// Empty (so nothing drawn) when there's no position.
+						{
+							label: "Your entry",
+							data: entryLine,
+							borderColor: entryColor,
+							backgroundColor: entryColor,
+							borderWidth: 1.5,
+							borderDash: [6, 4],
+							pointRadius: 0,
+							tension: 0,
+						},
 					],
 				},
 				options: {
@@ -1234,7 +1317,10 @@ export class StockValuationsView extends ItemView {
 						},
 					},
 					plugins: {
-						legend: { display: false },
+						legend: {
+							display: zoomed,
+							labels: { color: mutedColor, usePointStyle: true, boxWidth: 8 },
+						},
 						tooltip: {
 							callbacks: {
 								title: (items) => (items[0] ? window.moment(items[0].parsed.x).format("YYYY-MM-DD") : ""),
@@ -1244,7 +1330,10 @@ export class StockValuationsView extends ItemView {
 					},
 				},
 			});
-			this.historyCharts.push(chart);
+			this.historyCharts.push(buildChart(canvas, false));
+			zoomBtn.addEventListener("click", () => {
+				new ChartZoomModal(this.app, `${SCENARIO_LABELS[key]} — fair value vs. price`, (target) => buildChart(target, true)).open();
+			});
 		}
 	}
 
@@ -2610,6 +2699,28 @@ export class StockValuationsView extends ItemView {
 			this.warnIfDuplicateTicker();
 		});
 
+		// --- Position section — not scenario-specific, so editable from any tab ---
+		const position = this.section(formCol, "Your position (optional)");
+		const entryWrap = position.createDiv({ cls: "sv-field" });
+		const entryLabelRow = entryWrap.createDiv({ cls: "sv-field-label-row" });
+		entryLabelRow.createEl("label", { text: "Average entry price" });
+		entryLabelRow.createSpan({ cls: "sv-unit-hint", text: "$/share" });
+		const entryInput = entryWrap.createDiv({ cls: "sv-input-row" }).createEl("input", { type: "text" });
+		entryInput.setAttr("inputmode", "decimal");
+		entryInput.value = this.avgEntry;
+		entryInput.addEventListener("input", () => {
+			this.avgEntry = sanitizeNumericInput(entryInput.value);
+			this.renderResults();
+		});
+		const dateWrap = position.createDiv({ cls: "sv-field" });
+		const dateLabelRow = dateWrap.createDiv({ cls: "sv-field-label-row" });
+		dateLabelRow.createEl("label", { text: "Entry date" });
+		const dateInput = dateWrap.createDiv({ cls: "sv-input-row" }).createEl("input", { type: "date" });
+		dateInput.value = this.entryDate;
+		dateInput.addEventListener("input", () => {
+			this.entryDate = dateInput.value;
+		});
+
 		// --- WACC section ---
 		const wacc = this.section(formCol, "WACC");
 		this.field(wacc, "Risk-free rate (RFR)", "rfr", "number", "percent");
@@ -3344,12 +3455,14 @@ export class StockValuationsView extends ItemView {
 		this.resultsEl.createEl("h4", { text: "Margin of safety", cls: "sv-results-subhead" });
 		const mosTable = this.resultsEl.createEl("table");
 		const mosHead = mosTable.createEl("tr");
-		["Method", "Value", "MoS"].forEach((h) => mosHead.createEl("th", { text: h }));
+		// With an average entry set, a fourth column shows the margin of safety
+		// against that entry instead of today's price — "was my cost basis a
+		// good price?"
+		const entry = this.entryNum();
+		const headers = entry > 0 ? ["Method", "Value", "MoS", "MoS @ entry"] : ["Method", "Value", "MoS"];
+		headers.forEach((h) => mosHead.createEl("th", { text: h }));
 
-		const mosRow = (name: string, val: string, mos: number) => {
-			const tr = mosTable.createEl("tr");
-			labelCell(tr, name);
-			tr.createEl("td", { text: val, cls: "sv-num" });
+		const mosCellFor = (tr: HTMLElement, mos: number) => {
 			const mosCell = tr.createEl("td", { cls: "sv-num sv-mos" });
 			if (!isFinite(mos)) {
 				mosCell.setText("—");
@@ -3359,10 +3472,18 @@ export class StockValuationsView extends ItemView {
 			}
 		};
 
-		mosRow("DCF", formatCurrency(r.dcfIv), r.dcfMos);
-		mosRow("Graham", formatCurrency(r.grahamIv), r.grahamMos);
-		mosRow("Ten Cap", formatCurrency(r.tenCapIv), r.tenCapMos);
-		mosRow("DDM", formatCurrency(r.ddmIv), r.ddmMos);
+		const mosRow = (name: string, val: string, mos: number, iv: number) => {
+			const tr = mosTable.createEl("tr");
+			labelCell(tr, name);
+			tr.createEl("td", { text: val, cls: "sv-num" });
+			mosCellFor(tr, mos);
+			if (entry > 0) mosCellFor(tr, marginOfSafety(iv, entry));
+		};
+
+		mosRow("DCF", formatCurrency(r.dcfIv), r.dcfMos, r.dcfIv);
+		mosRow("Graham", formatCurrency(r.grahamIv), r.grahamMos, r.grahamIv);
+		mosRow("Ten Cap", formatCurrency(r.tenCapIv), r.tenCapMos, r.tenCapIv);
+		mosRow("DDM", formatCurrency(r.ddmIv), r.ddmMos, r.ddmIv);
 
 		// Everything else: real numbers worth showing, but not a fair value
 		// with a margin of safety attached — no MoS column to fake one for them.
@@ -3372,7 +3493,8 @@ export class StockValuationsView extends ItemView {
 		["Metric", "Value"].forEach((h) => metricsHead.createEl("th", { text: h }));
 
 		// tone, when given, adds the same colored dot the MoS column uses —
-		// only Payback Time has bands worth coloring (see paybackTone).
+		// only Payback Time and PEG have bands worth coloring (see paybackTone,
+		// pegTone).
 		const metricRow = (name: string, val: string, helpKey?: string, tone?: PaybackTone | null) => {
 			const tr = metricsTable.createEl("tr");
 			labelCell(tr, name, helpKey);
@@ -3386,6 +3508,7 @@ export class StockValuationsView extends ItemView {
 		metricRow("Reverse DCF (implied growth)", formatPercent(r.impliedGrowth * 100), "impliedGrowth");
 		metricRow("Ten Cap owner-earnings yield", formatPercent(r.tenCapYield));
 		metricRow("Payback Time", formatYears(r.paybackYears), "paybackYears", paybackTone(r.paybackYears));
+		metricRow("PEG ratio", isFinite(r.pegRatio) ? r.pegRatio.toFixed(2) : "—", "pegRatio", pegTone(r.pegRatio));
 	}
 
 	// DCF fair value across a fixed grid: WACC (columns) × growth yrs 1-5

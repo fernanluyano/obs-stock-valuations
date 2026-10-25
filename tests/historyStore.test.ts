@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry } from "../historyStore";
+import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry, entryLinePoints } from "../historyStore";
 import type { FormState, HistoryEntry, Results, Scenario, ScenarioKey } from "../valuationStore";
 
 // All timestamps built via local Date components (not raw epoch literals) so
@@ -70,6 +70,7 @@ function fixtureResults(overrides: Partial<Results> = {}): Results {
 		ddmMos: NaN,
 		costOfEquity: 0.1,
 		paybackYears: 7,
+		pegRatio: 1.5,
 		...overrides,
 	};
 }
@@ -241,5 +242,39 @@ describe("compactHistory", () => {
 
 	it("returns an empty array for empty input", () => {
 		expect(compactHistory([], at(2024, 6, 1))).toEqual([]);
+	});
+});
+
+describe("entryLinePoints", () => {
+	const first = at(2024, 0, 1);
+	const mid = at(2024, 3, 1);
+	const last = at(2024, 5, 1);
+	const times = [first, mid, last];
+
+	it("is empty without a usable entry", () => {
+		expect(entryLinePoints(undefined, "2024-02-01", times)).toEqual([]);
+		expect(entryLinePoints(0, "2024-02-01", times)).toEqual([]);
+		expect(entryLinePoints(42, undefined, [])).toEqual([]);
+	});
+
+	it("has a point at every history time when there is no date, so the tooltip finds it anywhere", () => {
+		expect(entryLinePoints(42, undefined, times)).toEqual([
+			{ x: first, y: 42 },
+			{ x: mid, y: 42 },
+			{ x: last, y: 42 },
+		]);
+	});
+
+	it("starts at the entry date, then every later history time", () => {
+		const entry = new Date(2024, 2, 1).getTime();
+		expect(entryLinePoints(42, "2024-03-01", times).map((p) => p.x)).toEqual([entry, mid, last]);
+	});
+
+	it("clamps an entry date before the chart start", () => {
+		expect(entryLinePoints(42, "2020-01-01", times)[0].x).toBe(first);
+	});
+
+	it("is empty when the entry date is after the newest point", () => {
+		expect(entryLinePoints(42, "2025-01-01", times)).toEqual([]);
 	});
 });

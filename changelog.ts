@@ -8,6 +8,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "2.1.0",
+		highlights: [
+			"🎯 New optional \"Your position\" section on the calculator form: type your average entry price and the date it applies from. It's one value shared by Bull/Base/Bear, entered by hand, and saved in the ticker's note (avgEntry / entryDate)",
+			"📈 The \"Fair value vs. price\" charts now draw your entry as a dashed line from the entry date on, so you can see how far or close price and fair value are to where you bought. It's recomputed each time the charts draw — nothing extra is stored in the history",
+			"🔍 Each \"Fair value vs. price\" chart now has a zoom icon that opens it in a larger window, where you can click the legend to hide or show lines — useful when one method's fair value dwarfs the rest",
+			"🧮 New PEG ratio in the form's Other metrics: (price ÷ EPS) ÷ your expected EPS growth, per scenario. Green at 1 or below, yellow up to 2, red beyond; \"—\" when EPS or growth isn't positive. It uses the same growth input as Graham",
+			"📋 The form's Margin of safety table gains a \"MoS @ entry\" column — was your cost basis a good price, not just today's?",
+		],
+	},
+	{
 		version: "2.0.2",
 		highlights: [
 			"🐛 Fixed the plugin showing no valuations after closing and reopening the app, mainly on mobile. It read your notes before Obsidian had finished indexing the vault, so it found none until the plugin was reloaded. It now waits for the vault to be ready, and shows \"Loading valuations…\" until then. Your notes were never affected and nothing needs repairing",

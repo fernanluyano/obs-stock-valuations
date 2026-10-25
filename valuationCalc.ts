@@ -2,7 +2,7 @@
 // fields into real numbers and runs them through the calculations.ts
 // formulas. Kept pure and Obsidian-free so it can be unit tested directly —
 // see tests/valuationCalc.test.ts.
-import { calcCostOfEquity, calcDcf, calcDdm, calcGraham, calcImpliedGrowth, calcPaybackTime, calcTenCap, calcWacc, marginOfSafety, ownerEarningsYield } from "./calculations";
+import { calcCostOfEquity, calcDcf, calcDdm, calcGraham, calcImpliedGrowth, calcPaybackTime, calcPeg, calcTenCap, calcWacc, marginOfSafety, ownerEarningsYield } from "./calculations";
 import { SCALE_MULTIPLIERS, ScaleUnit } from "./units";
 import { FormState, Results } from "./valuationStore";
 
@@ -136,6 +136,7 @@ export function computeResultsForState(
 		tenCapMos: marginOfSafety(tenCap.iv, price),
 		ddmIv,
 		ddmMos: marginOfSafety(ddmIv, price),
+		pegRatio: calcPeg(price, n("eps"), n("grahamGrowth")),
 		paybackYears: calcPaybackTime({
 			fcf: dcfInputs.fcf,
 			growth1to5: dcfInputs.growth1to5,

@@ -53,6 +53,7 @@ const blankResults: Results = {
 	ddmMos: 0,
 	costOfEquity: 0,
 	paybackYears: 0,
+	pegRatio: 0,
 };
 
 function scenario(stateOverrides: Partial<FormState> = {}): Scenario {

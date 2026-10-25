@@ -75,6 +75,8 @@ function valuationProps(ticker: string, record: SavedValuation): Props {
 		updatedAt: record.updatedAt,
 		lastPriceRefreshAt: record.lastPriceRefreshAt,
 		researchNotePath: record.researchNotePath,
+		avgEntry: record.avgEntry,
+		entryDate: record.entryDate,
 	};
 	for (const scenario of SCENARIO_KEYS) {
 		const state = record.scenarios[scenario].state;
@@ -149,6 +151,7 @@ function emptyResults(): Scenario["results"] {
 		ddmIv: 0,
 		ddmMos: 0,
 		paybackYears: 0,
+		pegRatio: 0,
 	};
 }
 
@@ -215,6 +218,10 @@ export function parseValuationNote(props: RawProps, content: string): ParsedValu
 	if (lastPriceRefreshAt !== undefined) record.lastPriceRefreshAt = lastPriceRefreshAt;
 	const researchNotePath = str(props, "researchNotePath");
 	if (researchNotePath) record.researchNotePath = researchNotePath;
+	const avgEntry = Number(str(props, "avgEntry"));
+	if (str(props, "avgEntry") !== undefined && Number.isFinite(avgEntry) && avgEntry > 0) record.avgEntry = avgEntry;
+	const entryDate = str(props, "entryDate");
+	if (entryDate && /^\d{4}-\d{2}-\d{2}$/.test(entryDate)) record.entryDate = entryDate;
 	const history = parseHistory(content, issues);
 	if (history.length > 0) record.history = history;
 	return { ok: true, ticker, record, issues };

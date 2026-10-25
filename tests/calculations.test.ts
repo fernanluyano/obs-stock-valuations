@@ -19,6 +19,8 @@ import {
 	ownerEarningsYield,
 	PAYBACK_MAX_YEARS,
 	paybackTone,
+	calcPeg,
+	pegTone,
 } from "../calculations";
 
 describe("calcWacc", () => {
@@ -430,6 +432,32 @@ describe("calcPaybackTime", () => {
 	it("returns NaN when base FCF is zero or negative", () => {
 		expect(calcPaybackTime({ ...flat, fcf: 0, mktCap: 1000 })).toBeNaN();
 		expect(calcPaybackTime({ ...flat, fcf: -100, growth1to5: 0.5, mktCap: 1000 })).toBeNaN();
+	});
+});
+
+describe("calcPeg", () => {
+	it("is P/E divided by growth in percent points (growth given as a fraction)", () => {
+		expect(calcPeg(100, 5, 0.1)).toBeCloseTo(2, 10); // P/E 20, 10% growth
+		expect(calcPeg(50, 5, 0.2)).toBeCloseTo(0.5, 10);
+	});
+
+	it("is NaN without positive price, EPS or growth", () => {
+		expect(calcPeg(0, 5, 0.1)).toBeNaN();
+		expect(calcPeg(100, 0, 0.1)).toBeNaN();
+		expect(calcPeg(100, -5, 0.1)).toBeNaN();
+		expect(calcPeg(100, 5, 0)).toBeNaN();
+		expect(calcPeg(100, 5, -0.03)).toBeNaN();
+	});
+});
+
+describe("pegTone", () => {
+	it("is pos at or under 1, warn up to 2, neg beyond, null for NaN", () => {
+		expect(pegTone(0.8)).toBe("pos");
+		expect(pegTone(1)).toBe("pos");
+		expect(pegTone(1.5)).toBe("warn");
+		expect(pegTone(2)).toBe("warn");
+		expect(pegTone(2.01)).toBe("neg");
+		expect(pegTone(NaN)).toBeNull();
 	});
 });
 

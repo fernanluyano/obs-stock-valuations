@@ -81,3 +81,33 @@ export function compactHistory(history: HistoryEntry[], now: number): HistoryEnt
 
 	return [...lastPerMonth.values(), ...recent].sort((a, b) => a.at - b.at);
 }
+
+// Local midnight of a YYYY-MM-DD entry date, or NaN if it isn't one.
+export function parseEntryDate(date: string | undefined): number {
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date ?? "");
+	if (!m) return NaN;
+	return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+}
+
+// The flat "your entry" line for a history chart whose points are at `times`
+// (ascending): the entry date (clamped to the chart start; the whole span when
+// there's no date) followed by one point at every history time after it. A
+// point per history time, not just the two ends, because the chart's
+// index-mode tooltip only lists a dataset that has a point at the hovered x.
+// Computed on the fly, never stored per history entry. Empty when there's no
+// usable entry, or the entry date is after the newest history point (nothing
+// to draw it against yet).
+export function entryLinePoints(
+	avgEntry: number | undefined,
+	entryDate: string | undefined,
+	times: number[]
+): { x: number; y: number }[] {
+	if (avgEntry === undefined || !Number.isFinite(avgEntry) || avgEntry <= 0 || times.length === 0) return [];
+	const firstAt = times[0];
+	const lastAt = times[times.length - 1];
+	const dated = parseEntryDate(entryDate);
+	const from = Number.isNaN(dated) ? firstAt : Math.max(dated, firstAt);
+	if (from > lastAt) return [];
+	const xs = [from, ...times.filter((t) => t > from)];
+	return xs.map((x) => ({ x, y: avgEntry }));
+}

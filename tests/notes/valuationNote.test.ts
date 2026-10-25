@@ -50,12 +50,20 @@ describe("buildValuationNote / parseValuationNote", () => {
 		});
 	});
 
+	it("round-trips the average entry and its date", () => {
+		const parsed = parse(buildValuationNote("ACME", fixtureValuation({ avgEntry: 123.45, entryDate: "2024-03-09" })));
+		if (!parsed.ok) throw new Error(parsed.reason);
+		expect(parsed.record).toMatchObject({ avgEntry: 123.45, entryDate: "2024-03-09" });
+	});
+
 	it("omits optional fields that are absent", () => {
 		const parsed = parse(buildValuationNote("ACME", fixtureValuation()));
 		if (!parsed.ok) throw new Error(parsed.reason);
 		expect("lastPriceRefreshAt" in parsed.record).toBe(false);
 		expect("researchNotePath" in parsed.record).toBe(false);
 		expect("history" in parsed.record).toBe(false);
+		expect("avgEntry" in parsed.record).toBe(false);
+		expect("entryDate" in parsed.record).toBe(false);
 	});
 
 	it("round-trips the history at full precision, with nulls as empty cells, newest first", () => {

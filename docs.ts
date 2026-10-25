@@ -40,6 +40,8 @@ export const VALUATION_HISTORY_DOC: DataSourceDoc = {
 		"History only accrues forward from here — there's no way to build it backwards. A ticker saved before this feature existed (or one you haven't re-saved since) starts with an empty history table; it fills in one entry at a time from your next Save onward, not retroactively.",
 		"The point is a specific question: has this ticker actually looked cheap for a long stretch and never re-rated (a value trap), or is a big margin of safety brand new? The saved-valuations table always reflects the latest save only.",
 		"Each ticker's history is stored in its own vault note, TICKER.md (e.g. ADBE.md), in the folder set under Settings → Notes folder — one row per entry, newest first, alongside all of that ticker's inputs. These notes are your data: reinstall the plugin and everything is read back from them. Only the ticker that changed is rewritten (a Save, a price refresh, or a history delete/compact). Deleting a ticker moves its note to the trash. Edit them through the plugin, not by hand — a history row the plugin can't read stops it from saving that note.",
+		"Each scenario's \"Fair value vs. price\" chart has a zoom icon that opens it larger; there you can click the legend to hide or show individual lines — handy when one method's fair value is far above the rest and squeezes the others together.",
+		"If you've entered your average entry price (and date) under \"Your position\" on the form, each chart also draws it as a dashed line from that date on. It's one number you type by hand, shared by all three scenarios, and it isn't logged into the history — the line is redrawn from your current entry every time, so changing your entry moves it across the whole chart. The form's Margin of safety table also gains a \"MoS @ entry\" column: each method's margin of safety against your entry price instead of today's.",
 		"Delete any single entry (with confirmation) if it was a mistake. \"Compact history\" (also confirmed) collapses everything older than about 6 months down to one entry per calendar month, so the file doesn't grow without bound over years of regular saves — the most recent 6 months are always left at full detail.",
 	],
 };
@@ -58,7 +60,7 @@ export const DATA_SOURCES_DOC: DataSourceDoc = {
 };
 
 export const DOCS_INTRO: string[] = [
-	"This plugin runs five independent valuation methods off the same inputs (one of them, the DDM, only for dividend payers), plus Payback Time — a years-to-recoup metric rather than a fair value. Each one encodes a different set of assumptions about how a business creates value — none of them is \"the\" right answer, and they will often disagree with each other.",
+	"This plugin runs five independent valuation methods off the same inputs (one of them, the DDM, only for dividend payers), plus Payback Time and the PEG ratio — metrics rather than fair values. Each one encodes a different set of assumptions about how a business creates value — none of them is \"the\" right answer, and they will often disagree with each other.",
 	"No method here is suitable for every company. It's on you, the user, to judge whether a given method's assumptions actually hold for the business you're valuing before you trust its output — see \"Does this method fit?\" on each one below for pointers, but the judgment call is yours to make. The most useful signal is often agreement (or disagreement) between two or three methods on a company they're each suited to, not any single number in isolation.",
 ];
 
@@ -145,6 +147,20 @@ export const METHOD_DOCS: MethodDoc[] = [
 		sources: [
 			{ label: "How to Invest: Margin of Safety & Payback Time — Rule #1 Investing", url: "https://www.ruleoneinvesting.com/blog/how-to-invest/how-to-invest-margin-of-safety-payback-time/" },
 			{ label: "Payback period — Wikipedia", url: "https://en.wikipedia.org/wiki/Payback_period" },
+		],
+	},
+	{
+		title: "PEG Ratio",
+		formula: "P/E = price ÷ TTM diluted EPS\nPEG = P/E ÷ expected EPS growth (in %)",
+		body: [
+			"The price-to-earnings ratio divided by how fast earnings are expected to grow — a P/E adjusted for growth, so a high-multiple grower and a low-multiple plodder can be compared on one scale. The usual rule of thumb is that 1 is roughly fairly priced for its growth, so the value is colored green at 1 or below, yellow up to 2, and red beyond. Those cutoffs are conventional shorthand, not a precise standard. It isn't a fair value, so it has no margin of safety — it's shown in the results panel's Other metrics table, right below Payback Time.",
+			"Growth isn't a separate input: it's the same expected EPS growth you enter for Graham, which differs by scenario, so Bull/Base/Bear each get their own PEG (Bull's higher growth gives a lower one). That input is a 7–10 year figure, a longer window than PEG is usually quoted on (typically the next 1–5 years), so this reads a bit more generous than the textbook version.",
+			"Shows \"—\" when EPS isn't positive or growth is zero or negative — a PEG on shrinking or flat earnings says nothing useful.",
+		],
+		goodFor: "Profitable companies with positive earnings and a growth rate you can reasonably estimate — a quick way to see whether you're paying a sensible multiple for that growth.",
+		useCaution: "Entirely driven by one growth guess, and it ignores balance-sheet strength, cash conversion, and how long the growth can last. Misleading for cyclicals (peak EPS makes P/E look low), companies with one-off earnings, and anything with negative or erratic EPS. Not a substitute for a fair value — it says how pricey the multiple is for the growth assumed, not what the business is worth.",
+		sources: [
+			{ label: "PEG ratio — Investopedia", url: "https://www.investopedia.com/terms/p/pegratio.asp" },
 		],
 	},
 ];
