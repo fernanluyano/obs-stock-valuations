@@ -105,10 +105,36 @@ function missing(note: string): FieldResult {
 }
 
 // ---------------------------------------------------------------------------
-// XBRL tag fallback chains. Kept short and deliberately conservative — each
-// fallback is a genuine synonym filers use for the same concept, not a
-// broader concept that would silently change what's being measured (e.g. we
-// don't fall back capex to a tag that also includes intangible purchases).
+// XBRL tag fallback chains.
+//
+// Different companies report the same thing under different XBRL tags (one
+// files capex as PaymentsToAcquirePropertyPlantAndEquipment, another as
+// PaymentsToAcquireProductiveAssets), so each field below is a *list* of tags.
+// Fetch data and the synthetic history backfill both read these lists, so
+// adding a tag here fixes both, for every company that uses it. There is no
+// per-ticker configuration.
+//
+// How a list is used (see pickConceptFacts): for each company, every tag in
+// the list is checked against that company's own filings and the tag with the
+// most recent data wins. A tie goes to the tag earlier in the list. Tags are
+// never blended — one tag's full history is used.
+//
+// To add a tag for a company that comes back blank:
+//   1. Find what it files under: open
+//      https://data.sec.gov/api/xbrl/companyfacts/CIK<10-digit CIK>.json and
+//      search the "us-gaap" keys for the item (cash, debt, capex, ...), then
+//      check the latest "end" date and the unit are what you expect.
+//   2. Append the tag to the END of that field's list, with a comment naming
+//      the company it was confirmed against and what to watch for.
+//   3. Add a test in tests/fundamentalsProvider.test.ts shaped like that
+//      company's real filing (see the Evercore and Accenture cases).
+//
+// Order matters only for ties, so keep the purest, most specific tag first and
+// broader ones last. Be deliberate about broader tags: each fallback should
+// measure the same thing, or a close enough one that the difference is stated
+// in a comment (capex's PaymentsToAcquireProductiveAssets also counts
+// intangibles; it's last for that reason). A value that is missing is better
+// than one that quietly measures something else.
 // ---------------------------------------------------------------------------
 
 const TAGS = {
@@ -125,7 +151,12 @@ const TAGS = {
 		"NetCashProvidedByUsedInOperatingActivities",
 		"NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
 	],
-	capex: ["PaymentsToAcquirePropertyPlantAndEquipment"],
+	// PaymentsToAcquireProductiveAssets is last on purpose: it's broader (its
+	// definition adds intangible assets), so it's only reached for filers who
+	// don't tag PP&E purchases separately — confirmed against Evercore's real
+	// filings, where it is the only capex line (FY2025 $74M against $1.3B of
+	// operating cash flow, so the broader scope barely matters for such a filer).
+	capex: ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
 	interestExpense: ["InterestExpense", "InterestExpenseDebt"],
 	dilutedShares: ["WeightedAverageNumberOfDilutedSharesOutstanding"],
 	basicShares: ["WeightedAverageNumberOfSharesOutstandingBasic"],
@@ -149,6 +180,9 @@ const TAGS = {
 		"LongTermDebt",
 		"LongTermDebtAndCapitalLeaseObligations",
 		"ConvertibleLongTermNotesPayable",
+		// Evercore's real filings report their senior notes (~$540M) only under
+		// this tag. Last because it's the least specific of the group.
+		"LongTermNotesPayable",
 	],
 	// DebtCurrent is last on purpose: its official definition ("short-term
 	// debt AND current maturity of long-term debt... due within one year")
@@ -156,7 +190,9 @@ const TAGS = {
 	// don't use the more specific long-term-debt tags at all — confirmed
 	// against Accenture's real filings, which report debt exclusively under
 	// this tag and have no LongTermDebtNoncurrent/Current tag whatsoever.
-	longTermDebtCurrent: ["LongTermDebtCurrent", "LongTermDebtCurrentMaturities", "DebtCurrent"],
+	// NotesPayableCurrent is the very last fallback, for filers (Evercore) that
+	// report their short-term notes under it instead of the tags above.
+	longTermDebtCurrent: ["LongTermDebtCurrent", "LongTermDebtCurrentMaturities", "DebtCurrent", "NotesPayableCurrent"],
 	cash: ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
 	pretaxIncome: [
 		"IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
@@ -665,4 +701,191 @@ export async function fetchFundamentals(
 // same caching would leak state between unit tests. Not used by app code.
 export function _resetTickerMapCacheForTests(): void {
 	tickerMapCache = null;
+}
+
+// ---------------------------------------------------------------------------
+// Historical inputs, for the optional synthetic history backfill. Not used by
+// "Fetch data".
+// ---------------------------------------------------------------------------
+
+// The raw facts behind Graham's EPS and Ten Cap's OCF, capex and shares; null
+// for anything this filer doesn't report.
+export interface HistoricalFacts {
+	eps: SecFact[] | null; // diluted, else basic — same choice as deriveFundamentals
+	ocf: SecFact[] | null;
+	capex: SecFact[] | null;
+	shares: SecFact[] | null; // diluted weighted-average, else basic
+	dps: SecFact[] | null; // dividends per share (declared, else cash paid)
+	interestExpense: SecFact[] | null; // evidence for "debt-free", see netDebtAsOf
+	// Balance-sheet snapshots, for net debt.
+	ltNoncurrent: SecFact[] | null;
+	ltCurrent: SecFact[] | null;
+	cash: SecFact[] | null;
+}
+
+export function pickHistoricalFacts(companyFacts: SecCompanyFacts): HistoricalFacts {
+	const gaap = companyFacts.facts["us-gaap"];
+	return {
+		dps: pickConceptFacts(gaap, TAGS.dividendsPerShare, "USD/shares"),
+		interestExpense: pickConceptFacts(gaap, TAGS.interestExpense, "USD"),
+		ltNoncurrent: pickConceptFacts(gaap, TAGS.longTermDebtNoncurrent, "USD"),
+		ltCurrent: pickConceptFacts(gaap, TAGS.longTermDebtCurrent, "USD"),
+		cash: pickConceptFacts(gaap, TAGS.cash, "USD"),
+		eps: pickConceptFacts(gaap, TAGS.epsDiluted, "USD/shares") ?? pickConceptFacts(gaap, TAGS.epsBasic, "USD/shares"),
+		ocf: pickConceptFacts(gaap, TAGS.ocf, "USD"),
+		capex: pickConceptFacts(gaap, TAGS.capex, "USD"),
+		shares: pickConceptFacts(gaap, TAGS.dilutedShares, "shares") ?? pickConceptFacts(gaap, TAGS.basicShares, "shares"),
+	};
+}
+
+// One entry per reporting period: its most recently filed value (later filings
+// restate earlier periods for stock splits, and Yahoo's closing prices are
+// split-adjusted too) and the day it was first filed (when it became known).
+function periodsWithAvailability(facts: SecFact[]): { latest: SecFact; firstFiled: string }[] {
+	const periods = new Map<string, { latest: SecFact; firstFiled: string }>();
+	for (const f of facts) {
+		const key = `${f.start ?? ""}|${f.end}`;
+		const seen = periods.get(key);
+		if (!seen) periods.set(key, { latest: f, firstFiled: f.filed });
+		else {
+			if (f.filed > seen.latest.filed) seen.latest = f;
+			if (f.filed < seen.firstFiled) seen.firstFiled = f.filed;
+		}
+	}
+	return [...periods.values()];
+}
+
+// Trailing-twelve-month value of a flow (EPS, operating cash flow, capex) as
+// it could have been calculated on `asOf` (YYYY-MM-DD): only periods first
+// filed on or before that day are used, so a later quarter never leaks
+// backwards. Null when no usable fiscal year had been filed by then.
+export function ttmAsOf(facts: SecFact[] | null, asOf: string): number | null {
+	if (!facts) return null;
+	const known = periodsWithAvailability(facts)
+		.filter((p) => p.firstFiled <= asOf)
+		.map((p) => p.latest);
+	return computeTtm(known).value;
+}
+
+// Free cash flow (trailing operating cash flow minus capex) as of `asOf`, or
+// null if either part isn't known by then.
+export function fcfAsOf(facts: HistoricalFacts, asOf: string): number | null {
+	const ocf = ttmAsOf(facts.ocf, asOf);
+	const capex = ttmAsOf(facts.capex, asOf);
+	return ocf === null || capex === null ? null : ocf - capex;
+}
+
+// The most recent balance-sheet snapshot first filed on or before `asOf`.
+function instantAsOf(facts: SecFact[] | null, asOf: string): SecFact | null {
+	if (!facts) return null;
+	const known = periodsWithAvailability(facts.filter((f) => f.start === undefined))
+		.filter((p) => p.firstFiled <= asOf)
+		.map((p) => p.latest);
+	if (known.length === 0) return null;
+	return known.reduce((a, b) => (a.end >= b.end ? a : b));
+}
+
+// A debt tag whose latest figure is older than this is treated as no longer
+// reported (a company that repaid its debt, or stopped using the tag).
+const DEBT_FRESHNESS_DAYS = 730;
+
+// A company with no recent debt tag counts as debt-free only if its interest
+// expense is under this share of its operating cash flow (or isn't reported).
+// Debt-free Trade Desk pays ~0.1% (about $1M against $1.1B); Evercore, whose
+// notes sit under an unusual tag, pays ~2%.
+const DEBT_FREE_MAX_INTEREST_SHARE = 0.005;
+
+// The latest balance-sheet snapshot known on `asOf`, if it's recent enough.
+function recentInstantAsOf(facts: SecFact[] | null, asOf: string): SecFact | null {
+	const fact = instantAsOf(facts, asOf);
+	return fact && daysBetween(fact.end, asOf) <= DEBT_FRESHNESS_DAYS ? fact : null;
+}
+
+// Trailing interest expense as of `asOf`, or null when it isn't reported
+// recently (Trade Desk's InterestExpense tag stops in 2018).
+function recentInterestAsOf(facts: SecFact[] | null, asOf: string): number | null {
+	if (!facts) return null;
+	const cutoff = new Date(new Date(asOf).getTime() - DEBT_FRESHNESS_DAYS * MS_PER_DAY).toISOString().slice(0, 10);
+	return ttmAsOf(
+		facts.filter((f) => f.end >= cutoff),
+		asOf
+	);
+}
+
+// Net debt (total debt minus cash) as of `asOf`, built the same way as "Fetch
+// data" builds it (deriveTotalDebt / deriveNetDebt), with one addition: a
+// filer with no recent debt tag at all is taken to be debt-free only when its
+// interest expense backs that up (DEBT_FREE_MAX_INTEREST_SHARE), because an
+// absent tag can equally mean debt filed under an unusual one, and a wrong
+// number is worse than a gap. Null when debt or cash isn't known by then.
+export function netDebtAsOf(facts: HistoricalFacts, asOf: string): number | null {
+	const cash = instantAsOf(facts.cash, asOf);
+	const totDebt = deriveTotalDebt(recentInstantAsOf(facts.ltNoncurrent, asOf), recentInstantAsOf(facts.ltCurrent, asOf));
+	if (totDebt.value !== null) return deriveNetDebt(totDebt, cash).value;
+
+	if (!cash) return null;
+	const ocf = ttmAsOf(facts.ocf, asOf);
+	const interest = recentInterestAsOf(facts.interestExpense, asOf);
+	const debtFree = ocf !== null && ocf > 0 && (interest === null || interest < ocf * DEBT_FREE_MAX_INTEREST_SHARE);
+	return debtFree ? -cash.val : null;
+}
+
+// A share count that changes by this factor (either way) between two
+// consecutive periods is treated as a stock split.
+const SPLIT_JUMP_RATIO = 1.4;
+
+// Weighted-average share count from the latest period known on `asOf`. Null
+// when none is known, or when that period sits before a jump in the share
+// count: that is almost certainly a split the older filings never restated, so
+// the count wouldn't match Yahoo's split-adjusted price.
+export function sharesAsOf(facts: SecFact[] | null, asOf: string): number | null {
+	if (!facts) return null;
+	const periods = periodsWithAvailability(facts)
+		.map((p) => ({ ...p, days: durationDays(p.latest) }))
+		.sort((a, b) => (a.latest.end === b.latest.end ? a.days - b.days : a.latest.end < b.latest.end ? -1 : 1));
+
+	let unreliableThrough = "";
+	for (let i = 1; i < periods.length; i++) {
+		const before = periods[i - 1].latest.val;
+		const after = periods[i].latest.val;
+		if (before <= 0 || after <= 0) continue;
+		const ratio = after / before;
+		if (ratio >= SPLIT_JUMP_RATIO || ratio <= 1 / SPLIT_JUMP_RATIO) unreliableThrough = periods[i - 1].latest.end;
+	}
+
+	const known = periods.filter((p) => p.firstFiled <= asOf);
+	if (known.length === 0) return null;
+	const latest = known[known.length - 1].latest; // latest end, shortest period on a tie
+	if (unreliableThrough && latest.end <= unreliableThrough) return null;
+	return latest.val;
+}
+
+// A share count from the filings that is off from the shares the user saved by
+// this factor (either way) is treated as unusable. A company's share count
+// doesn't really move 3x in two years (splits are restated, see sharesAsOf), so
+// a gap this size means the filing tags a different count than the one the
+// user values: Berkshire Hathaway's only readable count is Class A (~1.5
+// million) while the saved one is Class B equivalents (~2,000 million).
+export const SHARES_SANITY_RATIO = 3;
+
+// `secShares` unchanged when it passes (or when there is no saved count to
+// compare with), null when it fails. The saved count is only a sanity check and
+// is never used as a substitute value.
+export function plausibleShares(secShares: number | null, savedShares: number): number | null {
+	if (secShares === null || !(secShares > 0)) return null;
+	if (!(savedShares > 0)) return secShares;
+	const ratio = secShares / savedShares;
+	return ratio >= 1 / SHARES_SANITY_RATIO && ratio <= SHARES_SANITY_RATIO ? secShares : null;
+}
+
+// All the historical facts for a ticker, or the error to show. Same network
+// path as fetchFundamentals; `get` is secHttpGet in production.
+export async function fetchHistoricalFacts(ticker: string, get: HttpGet): Promise<HistoricalFacts | FundamentalsError> {
+	const trimmed = ticker.trim();
+	if (!trimmed) return { kind: "not-found", message: "Enter a ticker first." };
+	const cikEntry = await resolveCik(trimmed, get);
+	if (isFundamentalsError(cikEntry)) return cikEntry;
+	const companyFacts = await fetchCompanyFactsJson(cikEntry.cik, cikEntry.title, get);
+	if (isFundamentalsError(companyFacts)) return companyFacts;
+	return pickHistoricalFacts(companyFacts);
 }

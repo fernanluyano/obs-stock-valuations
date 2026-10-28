@@ -8,6 +8,19 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "2.2.0",
+		highlights: [
+			"🕰️ New optional \"Backfill history\" on a ticker's history section: adds synthetic entries from up to 2 years of monthly prices so the charts show more than the days you saved. They're an educated guess — real past prices paired with your current inputs, which may not have applied back then — so only the price line is real history. Graham and Ten Cap are the exceptions: Graham uses each month's trailing EPS (SEC filings) and AAA bond yield (FRED), Ten Cap uses each month's operating cash flow, capex and share count, the DCF uses each month's free cash flow, net debt, share count and 10-year Treasury yield, and the DDM uses each month's dividend and the same yield (your growth assumptions are kept), so their lines move. Missing or unusable data leaves a gap for that month instead of borrowing today's values. In backfilled months the DDM's dividend growth is held to 2 points below that month's cost of equity so it can't blow up",
+			"🔎 New \"Real only\" button on the \"Fair value vs. price\" charts (shown when a ticker has synthetic entries) hides the backfilled ones, so the charts show just your real history",
+			"⏳ Backfill shows a spinner and what it's doing while it downloads and calculates",
+			"✨ The \"Fair value vs. price\" lines are now smooth, with the dots removed",
+			"🏦 The backfilled DCF now works for debt-free companies like Trade Desk: with no recent debt reported and almost no interest cost, net debt is taken as minus its cash instead of leaving the DCF blank",
+			"📥 \"Fetch data\" now fills capex, free cash flow, total debt and net debt for filers that tag them unusually, such as Evercore (it was leaving them blank). Debt there excludes lease liabilities, like for other tickers",
+			"💾 Save now keeps you on the form instead of jumping back to the table, and actions like Backfill, Compact and Delete no longer scroll you back to the top",
+			"🏷️ Synthetic entries are labelled in the table, dashed on the charts and marked in the ticker's note. Real entries always win and are never changed; \"Remove synthetic history\" deletes them",
+		],
+	},
+	{
 		version: "2.1.0",
 		highlights: [
 			"🎯 New optional \"Your position\" section on the calculator form: type your average entry price and the date it applies from. It's one value shared by Bull/Base/Bear, entered by hand, and saved in the ticker's note (avgEntry / entryDate)",

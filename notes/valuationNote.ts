@@ -57,7 +57,10 @@ const IV_COLUMNS = [
 ] as const;
 
 // "At" (epoch ms) is the exact timestamp the history round-trips on; "Date" is only for reading.
-const HISTORY_HEADER = ["At", "Date", "Price", ...IV_COLUMNS.map(([label]) => label)];
+// "Synthetic" is last and says "yes" on backfilled rows; notes written before it existed lack the column
+// and read as all real (and are upgraded on their next write).
+const LEGACY_HISTORY_HEADER = ["At", "Date", "Price", ...IV_COLUMNS.map(([label]) => label)];
+const HISTORY_HEADER = [...LEGACY_HISTORY_HEADER, "Synthetic"];
 
 export type ParsedValuationNote =
 	| { ok: true; ticker: string; record: SavedValuation; issues: string[] }
@@ -99,7 +102,13 @@ function numberCell(value: number | null | undefined): string {
 function historyRows(record: SavedValuation): string[][] {
 	return [...(record.history ?? [])]
 		.sort((a, b) => b.at - a.at)
-		.map((e) => [String(e.at), localDate(e.at), numberCell(e.price), ...IV_COLUMNS.map(([, key]) => numberCell(e[key]))]);
+		.map((e) => [
+			String(e.at),
+			localDate(e.at),
+			numberCell(e.price),
+			...IV_COLUMNS.map(([, key]) => numberCell(e[key])),
+			e.synthetic ? "yes" : "",
+		]);
 }
 
 function renderTable(rows: string[][]): string {
@@ -129,8 +138,15 @@ export function patchValuationNote(content: string, ticker: string, record: Save
 	const table = parseTable(patched, HISTORY_HEADER[0]);
 	const rows = historyRows(record);
 	if (!table) return patched.replace(/\n*$/, "\n\n") + renderTable(rows);
-	if (table.header.join("|") !== HISTORY_HEADER.join("|")) {
+	const current = table.header.join("|");
+	if (current !== HISTORY_HEADER.join("|") && current !== LEGACY_HISTORY_HEADER.join("|")) {
 		throw new Error("Refusing to write: the history table has unexpected columns");
+	}
+	if (current !== HISTORY_HEADER.join("|")) {
+		const [header, separator] = renderTable([]).split("\n");
+		table.headerRaw = header;
+		table.separatorRaw = separator;
+		table.header = HISTORY_HEADER;
 	}
 	table.rows = rows.map((cells) => ({ cells }));
 	return serializeTable(table);
@@ -180,7 +196,7 @@ function parseHistory(content: string, issues: string[]): HistoryEntry[] {
 			issues.push(`history row ${line + 1}: unreadable timestamp or price`);
 			return;
 		}
-		const entry = { at, price } as Record<string, number | HistoryIv>;
+		const entry = { at, price } as Record<string, number | HistoryIv | boolean>;
 		for (const [j, [, key]] of IV_COLUMNS.entries()) {
 			const cell = row.cells[3 + j];
 			const value = Number(cell);
@@ -191,6 +207,8 @@ function parseHistory(content: string, issues: string[]): HistoryEntry[] {
 				return;
 			}
 		}
+		const synthetic = table.header.length === HISTORY_HEADER.length ? row.cells[3 + IV_COLUMNS.length].toLowerCase() : "";
+		if (synthetic === "yes") entry.synthetic = true;
 		entries.push(entry as unknown as HistoryEntry);
 	});
 	// The note lists newest first for reading, but in memory a history is oldest first (see

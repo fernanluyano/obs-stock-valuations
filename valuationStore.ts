@@ -90,6 +90,9 @@ export interface HistoryEntry {
 	ddmBearIv?: HistoryIv;
 	ddmBaseIv?: HistoryIv;
 	ddmBullIv?: HistoryIv;
+	// True only on entries backfilled from past prices (see buildSyntheticHistory
+	// in historyStore.ts); absent on every real entry, so older data is unaffected.
+	synthetic?: boolean;
 }
 
 // A stored history value as a plain number for math/display: missing or

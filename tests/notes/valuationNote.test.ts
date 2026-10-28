@@ -189,6 +189,35 @@ describe("patchValuationNote", () => {
 		expect(() => patchValuationNote(content, "ACME", fixtureValuation())).toThrow(/unreadable row/);
 	});
 
+	it("round-trips synthetic rows as 'yes' and leaves real rows unmarked", () => {
+		const history = [{ ...fixtureHistory[0], synthetic: true as const }, ...fixtureHistory.slice(1)];
+		const content = buildValuationNote("ACME", fixtureValuation({ history }));
+		expect(content).toContain("| yes |");
+		const parsed = parse(content);
+		if (!parsed.ok) throw new Error(parsed.reason);
+		expect(parsed.record.history).toEqual(history);
+		expect(parsed.record.history!.filter((e) => e.synthetic)).toHaveLength(1);
+	});
+
+	it("reads a note from before the Synthetic column as all real, and upgrades it on the next write", () => {
+		const legacy = buildValuationNote("ACME", fixtureValuation({ history: fixtureHistory }))
+			.replace(/\| Synthetic \|/, "")
+			.replace(/\|---\|$/m, "")
+			.replace(/\|\s*\|$/gm, "|");
+		const before = parse(legacy);
+		if (!before.ok) throw new Error(before.reason);
+		expect(before.issues).toEqual([]);
+		expect(before.record.history).toEqual(fixtureHistory);
+
+		const synthetic = [{ ...fixtureHistory[0], at: fixtureHistory[0].at - 86400000 * 40, synthetic: true as const }, ...fixtureHistory];
+		const patched = patchValuationNote(legacy, "ACME", fixtureValuation({ history: synthetic }));
+		expect(patched).toContain("| Synthetic |");
+		const after = parse(patched);
+		if (!after.ok) throw new Error(after.reason);
+		expect(after.issues).toEqual([]);
+		expect(after.record.history).toEqual(synthetic.sort((a, b) => a.at - b.at));
+	});
+
 	it("refuses to write a history table with other columns", () => {
 		const content = buildValuationNote("ACME", fixtureValuation({ history: fixtureHistory })).replace("| Price |", "| Cost |");
 		expect(() => patchValuationNote(content, "ACME", fixtureValuation())).toThrow(/unexpected columns/);

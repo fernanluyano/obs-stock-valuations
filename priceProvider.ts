@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { parseLatestFredValue } from "./fred";
+import { parseFredSeries, parseLatestFredValue, type FredPoint } from "./fred";
 
 // Same Yahoo Finance chart endpoint (and two-host fallback) used by the Stonks
 // plugin. requestUrl runs the request from Obsidian's main process, sidestepping
@@ -81,6 +81,20 @@ export function fetchRiskFreeRate(): Promise<number | null> {
 // percentage like ^TNX — Graham's Y. FRED's public CSV download needs no API
 // key; only the last ~60 days are requested, since only the latest
 // observation is used (holidays leave empty rows, hence the window).
+// The daily AAA yield series from `since` (YYYY-MM-DD) on, for the synthetic
+// history backfill. Empty when the request fails.
+export async function fetchAaaYieldHistory(since: string): Promise<FredPoint[]> {
+	try {
+		const res = await requestUrl({
+			url: `https://fred.stlouisfed.org/graph/fredgraph.csv?id=DAAA&cosd=${since}`,
+			throw: false,
+		});
+		return res.status === 200 ? parseFredSeries(res.text) : [];
+	} catch {
+		return [];
+	}
+}
+
 export async function fetchAaaYield(): Promise<number | null> {
 	const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 	try {

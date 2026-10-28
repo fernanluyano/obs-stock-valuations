@@ -51,7 +51,7 @@ import {
 import { applyBulkChanges, BULK_EDITABLE_FIELDS, BULK_FIELD_LABELS, BulkChanges, BulkField } from "./bulkEdit";
 import { computeResultsForState, MONEY_KEYS, numFromState, SHARE_KEYS } from "./valuationCalc";
 import { SCALE_LABELS, SCALE_MULTIPLIERS, SCALE_OPTIONS, ScaleUnit } from "./units";
-import { fetchQuotePrice } from "./priceProvider";
+import { fetchAaaYieldHistory, fetchQuoteHistory, fetchQuotePrice } from "./priceProvider";
 import type { MacroRow } from "./macro";
 import {
 	capeStatus,
@@ -64,12 +64,36 @@ import {
 	type MarketSnapshot,
 	type Status,
 } from "./marketData";
-import { fetchFundamentals, FieldResult, isFundamentalsError } from "./fundamentalsProvider";
+import {
+	fcfAsOf,
+	fetchFundamentals,
+	fetchHistoricalFacts,
+	FieldResult,
+	isFundamentalsError,
+	netDebtAsOf,
+	plausibleShares,
+	sharesAsOf,
+	ttmAsOf,
+} from "./fundamentalsProvider";
+import { calcTenCap } from "./calculations";
+import { fredValueAsOf } from "./fred";
 import { secHttpGet } from "./secHttp";
 import { formatCurrency, formatPercent, formatWithCommas, formatYears, sanitizeNumericInput } from "./format";
 import { HELP_TEXT } from "./helpText";
 import { FormState, HistoryEntry, historyIv, Results, SavedValuation, Scenario, ScenarioKey } from "./valuationStore";
-import { appendHistoryEntry, buildHistoryEntry, compactHistory, deleteHistoryEntry, entryLinePoints } from "./historyStore";
+import {
+	appendHistoryEntry,
+	buildHistoryEntry,
+	buildSyntheticHistory,
+	compactHistory,
+	deleteHistoryEntry,
+	entryLinePoints,
+	mergeSyntheticHistory,
+	monthlyCloses,
+	removeSyntheticHistory,
+	type SyntheticClose,
+	usesDdm,
+} from "./historyStore";
 import { DATA_SOURCES_DOC, DOCS_INTRO, DOCS_OTHER_INTRO, METHOD_DOCS, OTHER_METHODS, VALUATION_HISTORY_DOC } from "./docs";
 import { getChangelogEntry } from "./changelog";
 import { researchLinksActive } from "./settings";
@@ -246,6 +270,7 @@ function ivMosFormatter<T>(ivField: keyof T): (cell: CellComponent) => string {
 // the stored IV + price, not stored itself; see HistoryEntry).
 interface HistoryRow {
 	at: number;
+	synthetic: boolean;
 	price: number;
 	dcfBearIv: number;
 	dcfBearMos: number;
@@ -286,6 +311,7 @@ function buildHistoryRow(entry: HistoryEntry): HistoryRow {
 	const ddmBullIv = historyIv(entry.ddmBullIv);
 	return {
 		at: entry.at,
+		synthetic: entry.synthetic === true,
 		price: entry.price,
 		dcfBearIv,
 		dcfBearMos: marginOfSafety(dcfBearIv, entry.price),
@@ -567,6 +593,9 @@ export class StockValuationsView extends ItemView {
 	// stockMosChart, rebuilt whenever the history section itself is (full
 	// render(), same as the table above).
 	private historyCharts: Chart[] = [];
+	// The history charts' "Real only" filter: leaves synthetic (backfilled)
+	// entries off the charts. The table always lists everything.
+	private historyRealOnly = false;
 	private macroRefreshInFlight = false;
 	private static readonly PAGE_SIZE = 10;
 
@@ -609,7 +638,47 @@ export class StockValuationsView extends ItemView {
 		this.render();
 	}
 
+	// What the last render() drew (screen + ticker), so a redraw of the same
+	// thing (a filter toggle, Backfill, Delete, ...) keeps the scroll position
+	// while opening another screen or ticker starts at the top.
+	private lastRenderKey = "";
+
+	// The element that actually scrolls this view: the nearest ancestor (or the
+	// content element itself) with scrollable overflow. Found rather than
+	// assumed, since which one scrolls depends on Obsidian's layout.
+	private scrollContainer(): HTMLElement {
+		for (let el: HTMLElement | null = this.contentEl; el; el = el.parentElement) {
+			const overflowY = window.getComputedStyle(el).overflowY;
+			if ((overflowY === "auto" || overflowY === "scroll") && el.scrollHeight > el.clientHeight) return el;
+		}
+		return this.contentEl;
+	}
+
 	private render(): void {
+		const key = `${this.screen}|${this.originalTicker ?? ""}`;
+		const scroller = this.scrollContainer();
+		const scrollTop = key === this.lastRenderKey ? scroller.scrollTop : 0;
+		this.lastRenderKey = key;
+		this.renderContent();
+		if (scrollTop > 0) this.restoreScroll(scroller, scrollTop);
+	}
+
+	// Puts the scroll position back. The rebuilt page may not be tall enough on
+	// the first try (tables and charts finish laying out a frame or two later,
+	// and a position past the end is clamped), so this retries for about half a
+	// second, until the position holds.
+	private restoreScroll(scroller: HTMLElement, top: number): void {
+		scroller.scrollTop = top;
+		let frames = 0;
+		const retry = () => {
+			if (Math.abs(scroller.scrollTop - top) <= 1 || ++frames > 30) return;
+			scroller.scrollTop = top;
+			window.requestAnimationFrame(retry);
+		};
+		window.requestAnimationFrame(retry);
+	}
+
+	private renderContent(): void {
 		this.destroyChart();
 		this.destroyTabulator();
 		const root = this.contentEl;
@@ -697,7 +766,7 @@ export class StockValuationsView extends ItemView {
 		this.results = this.scenarios.base.results;
 	}
 
-	private loadIntoForm(ticker: string): void {
+	private loadIntoForm(ticker: string, scenario: ScenarioKey = "base"): void {
 		const saved = this.plugin.data.getValuation(ticker);
 		if (!saved) return;
 		this.originalTicker = ticker;
@@ -705,7 +774,7 @@ export class StockValuationsView extends ItemView {
 		this.entryDate = saved.entryDate ?? "";
 		this.moneyScale = saved.moneyScale;
 		this.sharesScale = saved.sharesScale;
-		this.activeScenario = "base";
+		this.activeScenario = scenario;
 
 		this.scenarios = {} as Record<ScenarioKey, Scenario>;
 		for (const key of SCENARIO_KEYS) {
@@ -901,7 +970,11 @@ export class StockValuationsView extends ItemView {
 
 		void this.plugin.data.saveValuation(ticker, record);
 		new Notice(`Saved ${ticker}.`);
-		this.screen = "table";
+		// Stay on the form: reload the saved record into it (so a new valuation
+		// becomes an existing one and its history section appears), keep the
+		// scenario tab, and keep the scroll position.
+		this.loadIntoForm(ticker, this.activeScenario);
+		this.lastRenderKey = `${this.screen}|${ticker}`;
 		this.render();
 	}
 
@@ -925,8 +998,44 @@ export class StockValuationsView extends ItemView {
 		const section = parent.createDiv({ cls: "sv-chart-section" });
 		const header = section.createDiv({ cls: "sv-table-header" });
 		header.createEl("h3", { text: "Valuation history" });
+		const actions = header.createDiv({ cls: "sv-header-actions" });
+		const backfillBtn = actions.createEl("button", { cls: "sv-docs-btn" });
+		const backfillIcon = backfillBtn.createSpan({ cls: "sv-docs-btn-icon" });
+		setIcon(backfillIcon, "history");
+		const backfillLabel = backfillBtn.createSpan({ text: "Backfill history" });
+		setTooltip(backfillBtn, "Optional. Adds estimated past entries from 2 years of monthly prices and today's inputs. Not real history.");
+		backfillBtn.addEventListener("click", () => {
+			new ConfirmModal(
+				this.app,
+				`Backfill estimated history for ${ticker}? This is optional and synthetic: it downloads up to 2 years of monthly prices and pairs each with your CURRENT inputs, which may not have applied back then, so the fair-value lines are an educated guess, not what you would have calculated at the time. Only the price line is real (Graham also uses each month's real EPS and AAA yield, Ten Cap each month's real cash flow, capex and share count, the DCF each month's real free cash flow, net debt, shares and Treasury yield, and the DDM each month's real dividend; your growth assumptions are kept, and anything missing is left as a gap). Entries are marked synthetic, real entries are never changed or replaced, and any earlier synthetic entries are replaced.`,
+				() => {
+					void this.backfillHistory(ticker, backfillBtn, backfillIcon, backfillLabel);
+				},
+				"Backfill"
+			).open();
+		});
+		if (history.some((h) => h.synthetic)) {
+			const removeBtn = actions.createEl("button", { cls: "sv-docs-btn" });
+			removeBtn.createSpan({ text: "Remove synthetic history" });
+			setTooltip(removeBtn, "Deletes every synthetic entry. Real entries are untouched.");
+			removeBtn.addEventListener("click", () => {
+				new ConfirmModal(
+					this.app,
+					`Remove all synthetic history entries for ${ticker}? Real entries are kept. This can't be undone (you can backfill again).`,
+					() => {
+						const saved = this.plugin.data.getValuation(ticker);
+						if (!saved?.history) return;
+						const remaining = removeSyntheticHistory(saved.history);
+						if (remaining.length > 0) saved.history = remaining;
+						else delete saved.history;
+						void this.plugin.data.persistValuations([ticker]);
+						this.render();
+					},
+					"Remove"
+				).open();
+			});
+		}
 		if (history.length > 0) {
-			const actions = header.createDiv({ cls: "sv-header-actions" });
 			const compactBtn = actions.createEl("button", { cls: "sv-docs-btn" });
 			compactBtn.createSpan({ text: "Compact history" });
 			setTooltip(compactBtn, "Collapses entries older than 6 months to one per month. Can't be undone.");
@@ -967,6 +1076,13 @@ export class StockValuationsView extends ItemView {
 			text: "One entry per day this ticker was saved or had its price refreshed (whichever happens more than once a day, the last one replaces that day's entry rather than adding another). Delete a mistaken entry, or compact everything older than 6 months down to one entry per month to keep the list short — both need confirmation and can't be undone.",
 		});
 
+		if (history.some((h) => h.synthetic)) {
+			section.createEl("p", {
+				cls: "sv-chart-caption sv-synthetic-note",
+				text: "Entries marked synthetic are estimates, not real history. Each pairs a past month-end price (real) with your current inputs, which may not have applied back then, so its fair values are an educated guess. Real entries always take precedence.",
+			});
+		}
+
 		if (history.length === 0) {
 			section.createEl("p", {
 				cls: "sv-empty-state",
@@ -977,6 +1093,108 @@ export class StockValuationsView extends ItemView {
 
 		this.renderHistoryTabulator(section, ticker, history);
 		this.renderHistoryChart(section, history);
+	}
+
+	// Optional backfill: downloads monthly closes, replays today's saved inputs at
+	// each, and merges the result in as synthetic entries (real entries win —
+	// see mergeSyntheticHistory). Nothing is written if the download fails.
+	private async backfillHistory(
+		ticker: string,
+		button: HTMLButtonElement,
+		icon: HTMLElement,
+		label: HTMLElement
+	): Promise<void> {
+		button.disabled = true;
+		// Spinner plus a stage label, since this downloads from three sources.
+		setIcon(icon, "loader-2");
+		icon.addClass("sv-spin");
+		label.setText("Downloading prices…");
+		try {
+			let prices: { t: number; v: number }[] = [];
+			try {
+				prices = (await fetchQuoteHistory(ticker, "1mo", "2y"))?.history ?? [];
+			} catch {
+				prices = [];
+			}
+			const monthly = monthlyCloses(prices, Date.now());
+			if (monthly.length === 0) {
+				new Notice(`Couldn't download price history for ${ticker}. Nothing was changed.`);
+				return;
+			}
+			// The inputs that really changed over time: Graham's EPS and AAA yield,
+			// Ten Cap's cash flow, capex and share count, the DCF's free cash
+			// flow, net debt, share count and risk-free rate, and the DDM's dividend
+			// and risk-free rate. A source that fails, or a month it has no usable
+			// figure for, leaves the methods that need it blank rather than
+			// borrowing today's values.
+			const isoDate = (at: number) => window.moment(at).format("YYYY-MM-DD");
+			label.setText("Downloading filings and yields…");
+			const [factsResult, yields, rfrPrices] = await Promise.all([
+				fetchHistoricalFacts(ticker, secHttpGet).catch(() => null),
+				fetchAaaYieldHistory(isoDate(monthly[0].at - 14 * 24 * 60 * 60 * 1000)),
+				// ^TNX is already a percentage; its monthly closes land on the same
+				// month-end dates as the stock's, so they can be looked up by date.
+				fetchQuoteHistory("^TNX", "1mo", "2y").catch(() => null),
+			]);
+			const facts = factsResult && !isFundamentalsError(factsResult) ? factsResult : null;
+			const rfrByDate = new Map(monthlyCloses(rfrPrices?.history ?? [], Date.now()).map((c) => [c.at, c.price]));
+			// Read after the awaits so edits made while downloading aren't overwritten.
+			const saved = this.plugin.data.getValuation(ticker);
+			if (!saved) return;
+			label.setText("Calculating…");
+			const taxRate = this.plugin.data.settings.taxRate;
+			const mainPct = numFromState(saved.scenarios.base.state, "mainPct", saved.moneyScale, saved.sharesScale, taxRate);
+			const savedShares = numFromState(saved.scenarios.base.state, "shares", saved.moneyScale, saved.sharesScale, taxRate);
+			const moneyDivisor = SCALE_MULTIPLIERS[saved.moneyScale];
+			const sharesDivisor = SCALE_MULTIPLIERS[saved.sharesScale];
+			// null stays null (unknown that month); a number goes into the form's display units.
+			const scaled = (v: number | null, divisor: number) => (v === null ? null : v / divisor);
+			const closes: SyntheticClose[] = monthly.map((c) => {
+				const date = isoDate(c.at);
+				// Anything unknown or unusable is null, which leaves that method
+				// blank for the month: a gap is better than a guess.
+				const ocf = facts ? ttmAsOf(facts.ocf, date) : null;
+				const capex = facts ? ttmAsOf(facts.capex, date) : null;
+				const shares = plausibleShares(facts ? sharesAsOf(facts.shares, date) : null, savedShares);
+				const tenCapIv = ocf === null || capex === null || shares === null ? null : calcTenCap({ ocf, capex, mainPct, shares }).iv;
+				const close: SyntheticClose = {
+					...c,
+					eps: facts ? ttmAsOf(facts.eps, date) : null,
+					aaaYield: yields.length > 0 ? fredValueAsOf(yields, date) : null,
+					rfr: rfrByDate.get(c.at) ?? null,
+					tenCapIv: tenCapIv !== null && Number.isFinite(tenCapIv) ? tenCapIv : null,
+					fcf: scaled(facts ? fcfAsOf(facts, date) : null, moneyDivisor),
+					netDebt: scaled(facts ? netDebtAsOf(facts, date) : null, moneyDivisor),
+					shares: scaled(shares, sharesDivisor),
+					dps: facts && usesDdm(saved.scenarios) ? ttmAsOf(facts.dps, date) : null,
+				};
+				return close;
+			});
+			const synthetic = buildSyntheticHistory(closes, saved.scenarios, (state) =>
+				computeResultsForState({ ...state }, saved.moneyScale, saved.sharesScale, taxRate)
+			);
+			const merged = mergeSyntheticHistory(saved.history, synthetic);
+			const added = merged.filter((h) => h.synthetic).length;
+			if (merged.length > 0) saved.history = merged;
+			else delete saved.history;
+			await this.plugin.data.persistValuations([ticker]);
+			const missingData = [
+				...(facts ? [] : ["the SEC filings (EPS, cash flow, debt, shares, dividends)"]),
+				...(yields.length > 0 ? [] : ["the AAA yield"]),
+				...(rfrByDate.size > 0 ? [] : ["the risk-free rate"]),
+			];
+			const inputsNote =
+				missingData.length === 0
+					? "Graham, Ten Cap, the DCF and the DDM use each month's own inputs; months without enough data are left blank."
+					: `Couldn't download ${missingData.join(" and ")}, so the methods that need it are blank.`;
+			new Notice(`Added ${added} synthetic history entr${added === 1 ? "y" : "ies"} for ${ticker}. ${inputsNote}`);
+			this.render();
+		} finally {
+			button.disabled = false;
+			icon.removeClass("sv-spin");
+			setIcon(icon, "history");
+			label.setText("Backfill history");
+		}
 	}
 
 	// Same paginated/sortable Tabulator setup as the table screen's own
@@ -1029,7 +1247,10 @@ export class StockValuationsView extends ItemView {
 				title: "Date",
 				field: "at",
 				sorter: "number",
-				formatter: (cell) => window.moment(cell.getValue() as number).format("YYYY-MM-DD"),
+				formatter: (cell) => {
+					const date = window.moment(cell.getValue() as number).format("YYYY-MM-DD");
+					return (cell.getData() as HistoryRow).synthetic ? `${date} <span class="sv-synthetic-tag">synthetic</span>` : date;
+				},
 				cssClass: "sv-num",
 				responsive: 0,
 			},
@@ -1156,7 +1377,28 @@ export class StockValuationsView extends ItemView {
 	// gaps.
 	private renderHistoryChart(parent: HTMLElement, history: HistoryEntry[]): void {
 		const section = parent.createDiv({ cls: "sv-chart-section" });
-		section.createEl("h3", { text: "Fair value vs. price" });
+		const chartHeader = section.createDiv({ cls: "sv-table-header" });
+		chartHeader.createEl("h3", { text: "Fair value vs. price" });
+		// Only offered when there is something to filter out.
+		const hasSynthetic = history.some((h) => h.synthetic);
+		const realOnly = hasSynthetic && this.historyRealOnly;
+		if (hasSynthetic) {
+			const filterBtn = chartHeader.createDiv({ cls: "sv-header-actions" }).createEl("button", {
+				cls: realOnly ? "sv-docs-btn mod-cta" : "sv-docs-btn",
+				text: "Real only",
+			});
+			filterBtn.setAttribute("aria-pressed", String(realOnly));
+			setTooltip(filterBtn, realOnly ? "Showing real entries only. Click to include synthetic ones." : "Hide synthetic (backfilled) entries from these charts.");
+			filterBtn.addEventListener("click", () => {
+				this.historyRealOnly = !this.historyRealOnly;
+				this.render();
+			});
+		}
+		const shown = realOnly ? history.filter((h) => !h.synthetic) : history;
+		if (shown.length === 0) {
+			section.createEl("p", { cls: "sv-empty-state", text: "No real entries yet. Turn the filter off to see the synthetic history." });
+			return;
+		}
 		section.createEl("p", {
 			cls: "sv-chart-caption",
 			text: "Price against each method's fair value, spaced by actual elapsed time (not just entry order) — one chart per scenario, oldest to newest. A price line that stays well under fair value for a long stretch without the gap closing is the value-trap pattern this history table exists to surface. Ten Cap and price aren't scenario-specific, so those two lines are identical across all three charts. Click the zoom icon on a chart to open it larger, where you can click the legend to hide or show lines.",
@@ -1183,7 +1425,7 @@ export class StockValuationsView extends ItemView {
 		legendItem(tenCapMethod.color, "Ten Cap");
 		legendItem(ddmMethod.color, "DDM");
 
-		const sorted = [...history].sort((a, b) => a.at - b.at);
+		const sorted = [...shown].sort((a, b) => a.at - b.at);
 		const firstAt = sorted[0].at;
 		const lastAt = sorted[sorted.length - 1].at;
 		// Chart.js's default tick generation for a linear scale rounds to "nice"
@@ -1197,6 +1439,9 @@ export class StockValuationsView extends ItemView {
 			firstAt === lastAt
 				? [firstAt]
 				: Array.from({ length: X_TICK_COUNT }, (_, i) => firstAt + ((lastAt - firstAt) * i) / (X_TICK_COUNT - 1));
+		// Dashed up to each synthetic point, solid once real entries begin.
+		const segment = { borderDash: (ctx: { p1DataIndex: number }) => (sorted[ctx.p1DataIndex]?.synthetic ? [3, 3] : undefined) };
+		if (sorted.some((e) => e.synthetic)) legendItem(mutedColor, "Dashed segments = synthetic (estimated)");
 		const saved = this.originalTicker ? this.plugin.data.getValuation(this.originalTicker) : undefined;
 		const entryLine = entryLinePoints(
 			saved?.avgEntry,
@@ -1235,8 +1480,9 @@ export class StockValuationsView extends ItemView {
 							borderColor: normalColor,
 							backgroundColor: normalColor,
 							borderWidth: 2.5,
-							pointRadius: 2,
+							pointRadius: 0,
 							tension: 0.4,
+							segment,
 						},
 						{
 							label: "DCF",
@@ -1244,8 +1490,9 @@ export class StockValuationsView extends ItemView {
 							borderColor: dcfMethod.color,
 							backgroundColor: dcfMethod.color,
 							borderWidth: 1.5,
-							pointRadius: 1.5,
+							pointRadius: 0,
 							tension: 0.4,
+							segment,
 						},
 						{
 							label: "Graham",
@@ -1253,8 +1500,9 @@ export class StockValuationsView extends ItemView {
 							borderColor: grahamMethod.color,
 							backgroundColor: grahamMethod.color,
 							borderWidth: 1.5,
-							pointRadius: 1.5,
+							pointRadius: 0,
 							tension: 0.4,
+							segment,
 						},
 						{
 							label: "Ten Cap",
@@ -1262,8 +1510,9 @@ export class StockValuationsView extends ItemView {
 							borderColor: tenCapMethod.color,
 							backgroundColor: tenCapMethod.color,
 							borderWidth: 1.5,
-							pointRadius: 1.5,
+							pointRadius: 0,
 							tension: 0.4,
+							segment,
 						},
 						{
 							label: "DDM",
@@ -1273,8 +1522,9 @@ export class StockValuationsView extends ItemView {
 							borderColor: ddmMethod.color,
 							backgroundColor: ddmMethod.color,
 							borderWidth: 1.5,
-							pointRadius: 1.5,
+							pointRadius: 0,
 							tension: 0.4,
+							segment,
 						},
 						// Flat line at the user's average entry, from the entry date
 						// on — recomputed here each render, never stored per entry.

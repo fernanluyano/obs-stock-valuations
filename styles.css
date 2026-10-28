@@ -2189,6 +2189,25 @@ td.sv-num {
 	margin: 0 0 var(--size-4-2) 0;
 }
 
+.sv-spin {
+	animation: sv-spin 1s linear infinite;
+}
+
+@keyframes sv-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.sv-synthetic-tag {
+	margin-left: 4px;
+	padding: 0 4px;
+	border-radius: 3px;
+	font-size: 0.75em;
+	color: var(--text-muted);
+	background: var(--background-modifier-border);
+}
+
 .sv-chart-caption {
 	font-size: var(--font-ui-smaller);
 	color: var(--text-faint);

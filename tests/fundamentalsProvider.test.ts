@@ -12,6 +12,7 @@ import {
 	latestFiscalYear,
 	latestInstant,
 	pickConceptFacts,
+	pickHistoricalFacts,
 	resolveCik,
 	SecCompanyFacts,
 	SecConcept,
@@ -405,6 +406,53 @@ describe("deriveFundamentals", () => {
 		};
 		const result = deriveFundamentals(makeCompanyFacts(gaap), "chkp");
 		expect(result.totDebt.value).toBe(1972100000);
+	});
+
+	describe("Evercore's real shape: capex and debt under less common tags", () => {
+		const evr = (): Record<string, SecConcept> => ({
+			NetCashProvidedByUsedInOperatingActivities: concept([
+				fact({ start: "2025-01-01", end: "2025-12-31", val: 1256500000, fp: "FY", form: "10-K" }),
+			]),
+			PaymentsToAcquireProductiveAssets: concept([
+				fact({ start: "2025-01-01", end: "2025-12-31", val: 74000000, fp: "FY", form: "10-K" }),
+			]),
+			LongTermNotesPayable: concept([fact({ end: "2025-12-31", val: 540200000, fp: "FY", form: "10-K" })]),
+			NotesPayableCurrent: concept([fact({ end: "2025-12-31", val: 48000000, fp: "FY", form: "10-K" })]),
+			CashAndCashEquivalentsAtCarryingValue: concept([fact({ end: "2025-12-31", val: 1426000000, fp: "FY", form: "10-K" })]),
+		});
+
+		it("reads capex from PaymentsToAcquireProductiveAssets when PP&E purchases aren't tagged, and derives free cash flow", () => {
+			const result = deriveFundamentals(makeCompanyFacts(evr()), "evr");
+			expect(result.capex.value).toBe(74000000);
+			expect(result.fcf.value).toBe(1256500000 - 74000000);
+		});
+
+		it("reads debt from LongTermNotesPayable and NotesPayableCurrent, and derives net debt", () => {
+			const result = deriveFundamentals(makeCompanyFacts(evr()), "evr");
+			expect(result.totDebt.value).toBe(540200000 + 48000000);
+			expect(result.netDebt.value).toBe(540200000 + 48000000 - 1426000000);
+		});
+
+		it("never overrides a filer's own PP&E capex or long-term debt tags", () => {
+			const gaap = {
+				...evr(),
+				PaymentsToAcquirePropertyPlantAndEquipment: concept([
+					fact({ start: "2025-01-01", end: "2025-12-31", val: 30000000, fp: "FY", form: "10-K" }),
+				]),
+				LongTermDebtNoncurrent: concept([fact({ end: "2025-12-31", val: 700000000, fp: "FY", form: "10-K" })]),
+				LongTermDebtCurrent: concept([fact({ end: "2025-12-31", val: 10000000, fp: "FY", form: "10-K" })]),
+			};
+			const result = deriveFundamentals(makeCompanyFacts(gaap), "evr");
+			expect(result.capex.value).toBe(30000000);
+			expect(result.totDebt.value).toBe(710000000);
+		});
+
+		it("also reaches the synthetic backfill: capex, debt and cash are picked up as of a date", () => {
+			const h = pickHistoricalFacts(makeCompanyFacts(evr()));
+			expect(h.capex).toEqual(evr().PaymentsToAcquireProductiveAssets.units.USD);
+			expect(h.ltNoncurrent).toEqual(evr().LongTermNotesPayable.units.USD);
+			expect(h.ltCurrent).toEqual(evr().NotesPayableCurrent.units.USD);
+		});
 	});
 
 	it("flags a resolved value as stale instead of silently presenting decade-old data as current (Berkshire Hathaway's real shape — EPS/shares are only ever tagged with a required Class A/B dimension SEC's API doesn't expose, so the newest fact this plugin can see is from 2015)", () => {
