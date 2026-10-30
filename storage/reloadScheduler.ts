@@ -7,7 +7,7 @@ export interface ReloadScheduler {
 // so changes are coalesced into one reload. A change arriving mid-reload queues exactly one more,
 // so the last state on disk is always the one loaded.
 export function createReloadScheduler(run: () => Promise<void>, delayMs: number): ReloadScheduler {
-	let timer: ReturnType<typeof setTimeout> | null = null;
+	let timer: number | null = null;
 	let running = false;
 	let again = false;
 	let cancelled = false;
@@ -29,8 +29,8 @@ export function createReloadScheduler(run: () => Promise<void>, delayMs: number)
 	};
 
 	const schedule = (): void => {
-		if (timer !== null) clearTimeout(timer);
-		timer = setTimeout(() => {
+		if (timer !== null) window.clearTimeout(timer);
+		timer = window.setTimeout(() => {
 			void fire();
 		}, delayMs);
 	};
@@ -43,7 +43,7 @@ export function createReloadScheduler(run: () => Promise<void>, delayMs: number)
 		},
 		cancel() {
 			cancelled = true;
-			if (timer !== null) clearTimeout(timer);
+			if (timer !== null) window.clearTimeout(timer);
 			timer = null;
 		},
 	};
