@@ -5,6 +5,10 @@ import { ObsidianVault } from "./storage/ObsidianVault";
 import { DataRepository } from "./dataRepository";
 import { fetchAaaYield, fetchRiskFreeRate } from "./priceProvider";
 import { fetchMacroData, fetchMarketData } from "./macro";
+import { isInFolder } from "./notes/paths";
+import { createReloadScheduler } from "./storage/reloadScheduler";
+
+const RELOAD_DELAY_MS = 500;
 
 export default class StockValuationsPlugin extends Plugin {
 	data!: DataRepository;
@@ -84,7 +88,30 @@ export default class StockValuationsPlugin extends Plugin {
 		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS)) {
 			if (leaf.view instanceof StockValuationsView) leaf.view.onDataLoaded();
 		}
+		this.watchExternalChanges();
 		await this.maybeShowChangelog();
+	}
+
+	// Edits synced in from another device arrive as ordinary file events, so the
+	// notes are re-read from disk. Registered only after the first load: before
+	// that Obsidian emits a create event for every file in the vault.
+	private watchExternalChanges(): void {
+		const scheduler = createReloadScheduler(async () => {
+			await this.data.reloadNotes();
+			for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_STOCK_VALUATIONS)) {
+				if (leaf.view instanceof StockValuationsView) leaf.view.onExternalChange();
+			}
+		}, RELOAD_DELAY_MS);
+		const touch = (...paths: string[]): void => {
+			const folder = this.data.settings.historyNotesFolder;
+			if (paths.some((p) => isInFolder(p, folder))) scheduler.notify();
+		};
+		const { vault } = this.app;
+		this.registerEvent(vault.on("modify", (f) => touch(f.path)));
+		this.registerEvent(vault.on("create", (f) => touch(f.path)));
+		this.registerEvent(vault.on("delete", (f) => touch(f.path)));
+		this.registerEvent(vault.on("rename", (f, oldPath) => touch(f.path, oldPath)));
+		this.register(() => scheduler.cancel());
 	}
 
 	// Shows the current version's release notes exactly once, the first time

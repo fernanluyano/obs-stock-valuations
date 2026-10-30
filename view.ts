@@ -638,6 +638,14 @@ export class StockValuationsView extends ItemView {
 		this.render();
 	}
 
+	// Called after the notes were re-read because they changed on disk (synced
+	// from another device). The form screen is left alone: redrawing it would
+	// throw away what's being typed, and it picks up the new data on its next open.
+	onExternalChange(): void {
+		if (this.screen === "form") return;
+		this.render();
+	}
+
 	// What the last render() drew (screen + ticker), so a redraw of the same
 	// thing (a filter toggle, Backfill, Delete, ...) keeps the scroll position
 	// while opening another screen or ticker starts at the top.

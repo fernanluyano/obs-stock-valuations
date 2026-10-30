@@ -295,6 +295,16 @@ export class DataRepository {
 		}
 	}
 
+	// Re-reads the notes after they changed on disk (an edit synced in from
+	// another device). Waits for the plugin's own pending writes first, so a
+	// reload never reads a half-saved state and then overwrites newer memory.
+	// Device-local state in data.json is left alone.
+	async reloadNotes(): Promise<void> {
+		await this.writeQueue;
+		await this.loadFromNotes();
+		this.recomputeAllResults();
+	}
+
 	private portableSettings(): PortableSettings {
 		const { historyNotesFolder: _folder, ...portable } = this.settings;
 		return portable;

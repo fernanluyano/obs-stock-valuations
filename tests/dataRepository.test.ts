@@ -130,6 +130,36 @@ describe("DataRepository AAA yield", () => {
 	});
 });
 
+describe("DataRepository.reloadNotes", () => {
+	it("picks up notes added, changed and removed on disk since load", async () => {
+		const vault = new MemoryVault();
+		seed(vault, "ACME", fixtureValuation({ lastPriceRefreshAt: 1 }));
+		seed(vault, "OLD", fixtureValuation({}, "OLD"));
+		const repo = newRepo(vault);
+		await repo.load();
+
+		seed(vault, "ACME", fixtureValuation({ lastPriceRefreshAt: 2 }));
+		seed(vault, "NEW", fixtureValuation({}, "NEW"));
+		vault.files.delete(`${FOLDER}/OLD.md`);
+		await repo.reloadNotes();
+
+		expect(repo.tickers().sort()).toEqual(["ACME", "NEW"]);
+		expect(repo.getValuation("ACME")!.lastPriceRefreshAt).toBe(2);
+	});
+
+	it("waits for pending local writes before reading", async () => {
+		const vault = new MemoryVault();
+		const repo = newRepo(vault);
+		await repo.load();
+
+		const saving = repo.saveValuation("ACME", fixtureValuation({ lastPriceRefreshAt: 7 }));
+		await repo.reloadNotes();
+		await saving;
+
+		expect(repo.getValuation("ACME")!.lastPriceRefreshAt).toBe(7);
+	});
+});
+
 describe("DataRepository.load from notes", () => {
 	it("starts from the default settings and an empty table on a fresh install", async () => {
 		const repo = newRepo(new MemoryVault());

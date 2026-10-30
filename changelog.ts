@@ -8,6 +8,12 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
 	{
+		version: "2.3.0",
+		highlights: [
+			"🔄 Multi-device sync: edits made on another device (Obsidian Sync, iCloud and similar) now show up automatically in the open Stock Valuations page, without reloading the plugin. The ticker form is left alone while you're on it, so nothing you're typing is lost; it shows the new data the next time you open it",
+		],
+	},
+	{
 		version: "2.2.0",
 		highlights: [
 			"🕰️ New optional \"Backfill history\" on a ticker's history section: adds synthetic entries from up to 2 years of monthly prices so the charts show more than the days you saved. They're an educated guess — real past prices paired with your current inputs, which may not have applied back then — so only the price line is real history. Graham and Ten Cap are the exceptions: Graham uses each month's trailing EPS (SEC filings) and AAA bond yield (FRED), Ten Cap uses each month's operating cash flow, capex and share count, the DCF uses each month's free cash flow, net debt, share count and 10-year Treasury yield, and the DDM uses each month's dividend and the same yield (your growth assumptions are kept), so their lines move. Missing or unusable data leaves a gap for that month instead of borrowing today's values. In backfilled months the DDM's dividend growth is held to 2 points below that month's cost of equity so it can't blow up",
